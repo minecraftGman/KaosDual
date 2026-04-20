@@ -54,7 +54,7 @@ static const char *TAG = "KAOS-ESP32";
 
 #define SD_SPI_HOST      HSPI_HOST
 #define PIN_SD_MOSI      13
-#define PIN_SD_MISO      12
+#define PIN_SD_MISO      19
 #define PIN_SD_CLK       14
 #define PIN_SD_CS        15
 #define SD_MOUNT_POINT   "/sdcard"
