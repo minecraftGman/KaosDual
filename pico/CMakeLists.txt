@@ -15,6 +15,9 @@ add_executable(kaos_pico
     SkylanderCrypt.c
 )
 
+# Tell TinyUSB where to find tusb_config.h
+target_include_directories(kaos_pico PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 # Pull in TinyUSB via Pico SDK
 target_link_libraries(kaos_pico
     pico_stdlib

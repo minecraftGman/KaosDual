@@ -69,7 +69,7 @@ static const char *TAG = "KAOS-ESP32";
  * ----------------------------------------------------------------------- */
 SemaphoreHandle_t g_sky_mutex;
 int               g_file_count = 0;
-char              g_file_list[64][256];
+char              g_file_list[64][300];
 
 /* -----------------------------------------------------------------------
  * LCD1602 via PCF8574 I2C backpack
@@ -148,7 +148,7 @@ static void scan_files(void) {
              strcasecmp(e->d_name+l-4,".dmp")==0 ||
              strcasecmp(e->d_name+l-4,".sky")==0 ||
              (l>5&&strcasecmp(e->d_name+l-5,".dump")==0))) {
-            snprintf(g_file_list[g_file_count],256,"%s/%s",SD_MOUNT_POINT,e->d_name);
+            snprintf(g_file_list[g_file_count],300,"%s/%s",SD_MOUNT_POINT,e->d_name);
             ESP_LOGI(TAG,"  [%d] %s",g_file_count,e->d_name);
             g_file_count++;
         }

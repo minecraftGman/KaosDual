@@ -27,7 +27,7 @@ static const char *TAG = "WebUI";
 
 extern SemaphoreHandle_t g_sky_mutex;
 extern int  g_file_count;
-extern char g_file_list[64][256];
+extern char g_file_list[64][300];
 
 /* -----------------------------------------------------------------------
  * The HTML page — single-file, zero external dependencies.
