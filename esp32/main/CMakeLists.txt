@@ -1,0 +1,21 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "Skylander.c"
+        "SkylanderCrypt.c"
+        "rijndael.c"
+        "web_ui.c"
+        "pico_bridge.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        driver
+        fatfs
+        esp_timer
+        log
+        vfs
+        esp_wifi
+        esp_netif
+        esp_http_server
+        nvs_flash
+)
