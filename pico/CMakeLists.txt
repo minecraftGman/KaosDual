@@ -23,6 +23,8 @@ target_link_libraries(kaos_pico
     pico_stdlib
     pico_multicore
     hardware_uart
+    hardware_flash
+    hardware_sync
     tinyusb_device
     tinyusb_board
 )
