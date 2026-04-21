@@ -23,6 +23,8 @@
 #include "pico/multicore.h"
 #include "pico/sync.h"
 #include "hardware/uart.h"
+#include "hardware/watchdog.h"
+#include "hardware/structs/watchdog.h"
 #include "tusb.h"
 
 #include "skylander_slots.h"
@@ -36,16 +38,27 @@
 #define KAOS_UART_TX    4
 #define KAOS_UART_RX    5
 
-/* -----------------------------------------------------------------------
- * Portal type — controls which USB descriptor is used.
- * Read by usb_descriptors.c via portal_get_type().
- *   0 = Spyro's Adventure / Giants
- *   1 = Swap Force
- *   2 = Trap Team (Traptanium)
- *   3 = Imaginators / SuperChargers  (default)
- * ----------------------------------------------------------------------- */
+/* Portal type — stored in watchdog scratch register so it survives reboot.
+ * scratch[4] = magic 0xKAOS, scratch[5] = portal type */
+#define PORTAL_TYPE_MAGIC 0xCA05CA05u
+
+static uint8_t load_portal_type(void) {
+    if (watchdog_hw->scratch[4] == PORTAL_TYPE_MAGIC) {
+        uint8_t t = (uint8_t)watchdog_hw->scratch[5];
+        if (t <= 3) return t;
+    }
+    return 3; /* default: Imaginators */
+}
+
+static void save_and_reboot_portal_type(uint8_t type) {
+    watchdog_hw->scratch[4] = PORTAL_TYPE_MAGIC;
+    watchdog_hw->scratch[5] = type;
+    watchdog_reboot(0, 0, 10); /* reboot in 10ms */
+    while (1) tight_loop_contents(); /* wait for reboot */
+}
+
 static volatile uint8_t g_portal_type     = 3;
-static volatile bool    g_type_changed    = false;  /* set by core 1, read by core 0 */
+static volatile bool    g_type_changed    = false;
 static volatile uint8_t g_pending_type    = 3;
 
 uint8_t portal_get_type(void) { return g_portal_type; }
@@ -131,10 +144,34 @@ static void core1_uart_rx(void) {
 /* -----------------------------------------------------------------------
  * HID processing (core 0)
  * ----------------------------------------------------------------------- */
+
+/* Sequence counter for status reports — PS3 uses this to detect new events */
+static uint8_t g_status_seq = 0;
+
+/* Track previous slot state to detect arrivals/removals */
+static bool g_slot_prev_active[MAX_SLOTS] = {false};
+
 static void build_status_report(uint8_t r[PORTAL_HID_REPORT_LEN]) {
     memset(r, 0, PORTAL_HID_REPORT_LEN);
     r[0] = RESP_STATUS;
-    r[1] = slots_portal_status();
+
+    uint32_t save = spin_lock_blocking(s_slot_lock);
+    uint8_t flags = 0;
+    for (int i = 0; i < MAX_SLOTS; i++) {
+        bool active = g_slots[i].loaded && g_slots[i].active;
+        if (active) flags |= (1 << i);
+
+        /* Detect arrival — set the "new tag" bit in upper nibble */
+        if (active && !g_slot_prev_active[i]) {
+            flags |= (1 << (i + 4));   /* arrival event bit */
+        }
+        g_slot_prev_active[i] = active;
+    }
+    spin_unlock(s_slot_lock, save);
+
+    r[1] = flags;
+    r[2] = g_status_seq++;
+    /* r[3..] = 0x00 padding */
 }
 
 static void process_hid_out(const uint8_t *in, uint8_t r[PORTAL_HID_REPORT_LEN]) {
@@ -272,6 +309,9 @@ int main(void) {
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     gpio_put(PICO_DEFAULT_LED_PIN, 0);
 
+    /* Load saved portal type from watchdog scratch register */
+    g_portal_type = load_portal_type();
+
     /* UART1 for ESP32 comms */
     uart_init(KAOS_UART, KAOS_BAUD);
     gpio_set_function(KAOS_UART_TX, GPIO_FUNC_UART);
@@ -296,26 +336,15 @@ int main(void) {
     while (true) {
         tud_task();
 
-        /* Handle portal type change — disconnect, switch descriptor, reconnect */
+        /* Handle portal type change — save to scratch and reboot */
         if (g_type_changed) {
             g_type_changed = false;
-            g_portal_active = false;
-
-            /* Blink LED to show type is switching */
             gpio_put(PICO_DEFAULT_LED_PIN, 1);
-
-            /* Disconnect from USB */
-            tud_disconnect();
-            sleep_ms(500);
-
-            /* Apply new type — usb_descriptors.c reads portal_get_type() */
-            g_portal_type = g_pending_type;
-
-            /* Reconnect — host will re-enumerate with new descriptor */
-            tud_connect();
-            gpio_put(PICO_DEFAULT_LED_PIN, 0);
-
-            last_status_ms = to_ms_since_boot(get_absolute_time());
+            sleep_ms(100);
+            /* save_and_reboot_portal_type saves type then reboots the Pico.
+             * On reboot load_portal_type() reads it back before USB init. */
+            save_and_reboot_portal_type(g_pending_type);
+            /* never reached */
         }
 
         if (tud_hid_ready() && g_response_ready) {

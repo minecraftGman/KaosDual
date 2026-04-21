@@ -239,6 +239,7 @@ static const char HTML_PAGE[] =
     "if(S.files&&S.files.length){"
       "h+=`<select id='s${i}'>`+S.files.map(f=>`<option>${f}</option>`).join('')+'</select>';"
       "h+=`<button class='btn btn-load' onclick='load(${i})'>Load</button>`;"
+      "h+=`<button class='btn btn-del' onclick='delFile(document.getElementById(\"s\"+${i}).value)' style='background:transparent;border:1px solid #ef4444;color:#ef4444;margin-top:7px;width:100%;padding:9px;border-radius:8px;font-size:.87rem;font-weight:600;cursor:pointer'>&#128465; Delete selected</button>`;"
     "}else{"
       "h+=`<div class='nofiles'>No files — upload one above</div>`;"
       "h+=`<button class='btn btn-load' disabled>Load</button>`;"
@@ -276,7 +277,15 @@ static const char HTML_PAGE[] =
 "function dl(slot){window.location='/api/download?slot='+slot;}"
 
 /* upload */
-"async function uploadFile(inp){"
+"async function delFile(f){"
+  "if(!f||!confirm('Delete '+f+'?'))return;"
+  "st('Deleting...',1);"
+  "try{"
+    "const j=await(await fetch('/api/delete',{method:'POST',"
+      "headers:{'Content-Type':'application/json'},body:JSON.stringify({file:f})})).json();"
+    "if(j.ok){st('Deleted',1);await go();}else st('Delete failed',0);"
+  "}catch(e){st('Error',0)}"
+"}"
   "const f=inp.files[0];if(!f)return;"
   "const stat=document.getElementById('upstat');"
   "stat.textContent='Uploading '+f.name+'...';"
@@ -661,11 +670,42 @@ static esp_err_t handle_download(httpd_req_t *req) {
 }
 
 /* -----------------------------------------------------------------------
- * Start server
+ * POST /api/delete  — body: {"file":"Spyro.bin"}
  * ----------------------------------------------------------------------- */
+static esp_err_t handle_delete(httpd_req_t *req) {
+    char body[128] = {0};
+    int len = req->content_len;
+    if (len > 0 && len < (int)sizeof(body)) httpd_req_recv(req, body, len);
+
+    char file[64] = {0};
+    char *pf = strstr(body, "\"file\"");
+    if (pf) {
+        pf = strchr(pf+6, '"');
+        if (pf) { pf++; int fi=0; while(*pf&&*pf!='"'&&fi<63) file[fi++]=*pf++; }
+    }
+
+    bool ok = false;
+    if (file[0]) {
+        char full[96];
+        spiffs_full_path(file, full, sizeof(full));
+        ok = (remove(full) == 0);
+        if (ok) {
+            ESP_LOGI(TAG, "Deleted %s", full);
+            xSemaphoreTake(g_sky_mutex, portMAX_DELAY);
+            scan_files();
+            xSemaphoreGive(g_sky_mutex);
+        } else {
+            ESP_LOGE(TAG, "Failed to delete %s", full);
+        }
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"Delete failed\"}");
+    return ESP_OK;
+}
 httpd_handle_t web_ui_start(void) {
     httpd_config_t config  = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 10;
+    config.max_uri_handlers = 12;
     config.stack_size       = 8192;
     /* Increase recv buffer for file uploads */
     config.recv_wait_timeout = 30;
@@ -686,8 +726,9 @@ httpd_handle_t web_ui_start(void) {
         { .uri="/api/sense",      .method=HTTP_POST, .handler=handle_sense      },
         { .uri="/api/portaltype", .method=HTTP_POST, .handler=handle_portaltype },
         { .uri="/api/upload",     .method=HTTP_POST, .handler=handle_upload     },
+        { .uri="/api/delete",     .method=HTTP_POST, .handler=handle_delete     },
     };
-    for (int i = 0; i < 8; i++) httpd_register_uri_handler(server, &uris[i]);
+    for (int i = 0; i < 9; i++) httpd_register_uri_handler(server, &uris[i]);
 
     ESP_LOGI(TAG, "HTTP server ready");
     return server;
