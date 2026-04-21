@@ -1,6 +1,4 @@
-# KAOS — Dual-Board Portal (Pi Pico + ESP32) 
-Based off: https://github.com/NicoAICP/KAOS
-All this code is Ai slopped together by claude because I just wanted to give the KOAS a webportal.
+# KAOS — Dual-Board Portal (Pi Pico + ESP32)
 
 Each chip does what it's best at:
 

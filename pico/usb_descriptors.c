@@ -1,6 +1,12 @@
 /*
  * usb_descriptors.c  —  Pi Pico / TinyUSB
  * Skylander Portal of Power  VID=0x1430  PID=0x0150
+ *
+ * PS3 uses the WIRELESS portal protocol:
+ *   - Only one interrupt IN endpoint (portal → host status/responses)
+ *   - Commands from host arrive via HID SET_REPORT control requests
+ *     (bmRequestType=0x21, bRequest=0x09, wValue=0x0200)
+ *   - No interrupt OUT endpoint
  */
 #include "usb_descriptors.h"
 #include "tusb.h"
@@ -24,30 +30,45 @@ static const tusb_desc_device_t desc_device = {
     .bNumConfigurations = 0x01,
 };
 
-/* ---- HID report descriptor (vendor 32-byte IN+OUT) ---- */
+/* ---- HID report descriptor — IN only (wireless portal style) ---- */
 static const uint8_t desc_hid_report[] = {
-    0x06,0x00,0xFF,
-    0x09,0x01,
-    0xA1,0x01,
-    0x19,0x01,0x29,0x40,0x15,0x00,0x26,0xFF,0x00,
-    0x75,0x08,0x95,0x20,0x81,0x00,
-    0x19,0x01,0x29,0x40,0x15,0x00,0x26,0xFF,0x00,
-    0x75,0x08,0x95,0x20,0x91,0x00,
-    0xC0,
+    0x06,0x00,0xFF,   /* Usage Page (Vendor 0xFF00) */
+    0x09,0x01,        /* Usage (0x01) */
+    0xA1,0x01,        /* Collection (Application) */
+    /* IN report — portal → host, 32 bytes */
+    0x19,0x01,
+    0x29,0x40,
+    0x15,0x00,
+    0x26,0xFF,0x00,
+    0x75,0x08,
+    0x95,0x20,
+    0x81,0x00,        /* Input (Data, Array, Abs) */
+    /* OUT report — host → portal via SET_REPORT control, 32 bytes */
+    0x19,0x01,
+    0x29,0x40,
+    0x15,0x00,
+    0x26,0xFF,0x00,
+    0x75,0x08,
+    0x95,0x20,
+    0x91,0x00,        /* Output (Data, Array, Abs) */
+    0xC0,             /* End Collection */
 };
 
-/* ---- Configuration descriptor ---- */
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_HID_INOUT_DESC_LEN)
+/* ---- Configuration descriptor — IN endpoint only ---- */
+#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN)
 static const uint8_t desc_config[] = {
-    TUD_CONFIG_DESCRIPTOR(1,1,0,CONFIG_TOTAL_LEN,TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP,100),
-    TUD_HID_INOUT_DESCRIPTOR(0,0,HID_ITF_PROTOCOL_NONE,
-        sizeof(desc_hid_report),
-        PORTAL_EP_OUT, PORTAL_EP_IN,
-        PORTAL_HID_REPORT_LEN, PORTAL_EP_POLL_MS),
+    TUD_CONFIG_DESCRIPTOR(1, 1, 0, CONFIG_TOTAL_LEN,
+                          TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
+    /* HID interface: IN endpoint only, no OUT endpoint */
+    TUD_HID_DESCRIPTOR(0, 0, HID_ITF_PROTOCOL_NONE,
+                       sizeof(desc_hid_report),
+                       PORTAL_EP_IN,
+                       PORTAL_HID_REPORT_LEN,
+                       PORTAL_EP_POLL_MS),
 };
 
 static const char *s_str[] = {
-    (const char[]){0x09,0x04},
+    (const char[]){0x09,0x04},  /* English */
     "Activision",
     "Spyro Portals",
     "00000001",

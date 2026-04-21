@@ -121,6 +121,7 @@ static void process_hid_out(const uint8_t *in, uint8_t r[PORTAL_HID_REPORT_LEN])
 
     switch (in[0]) {
         case CMD_ACTIVATE:
+            /* 'A' — activate portal. PS3 sends this after 'R'. */
             g_portal_active = (in[1] == 0x01);
             r[0]=RESP_READY; r[1]=0xFF; r[2]=0x77;
             break;
@@ -134,11 +135,15 @@ static void process_hid_out(const uint8_t *in, uint8_t r[PORTAL_HID_REPORT_LEN])
             break;
 
         case CMD_RESET:
-            g_portal_active = false;
+            /* 'R' — PS3 sends this first to start the portal.
+             * Respond with 'R' then immediately start sending status. */
+            g_portal_active = true;
+            r[0]='R';
             break;
 
         case CMD_MUSIC:
         case CMD_LIGHT:
+            /* Ignore lighting/music — no LED on our portal */
             break;
 
         case CMD_TAG_READ: {

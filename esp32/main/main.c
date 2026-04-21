@@ -116,6 +116,9 @@ static void lcd_line(uint8_t row, const char *s) {
 static sdmmc_card_t *g_sd_card = NULL;
 
 static void sd_init(void) {
+    ESP_LOGI(TAG,"SD init: MOSI=%d MISO=%d CLK=%d CS=%d",
+             PIN_SD_MOSI, PIN_SD_MISO, PIN_SD_CLK, PIN_SD_CS);
+
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = SD_SPI_HOST;
     spi_bus_config_t bus = {
@@ -123,25 +126,38 @@ static void sd_init(void) {
         .sclk_io_num=PIN_SD_CLK,.quadwp_io_num=-1,.quadhd_io_num=-1,
         .max_transfer_sz=4096,
     };
-    ESP_ERROR_CHECK(spi_bus_initialize(SD_SPI_HOST, &bus, SDSPI_DEFAULT_DMA));
+    esp_err_t ret = spi_bus_initialize(SD_SPI_HOST, &bus, SDSPI_DEFAULT_DMA);
+    ESP_LOGI(TAG,"SPI bus init: %s", esp_err_to_name(ret));
+    if (ret != ESP_OK) { lcd_line(0,"SPI BUS FAIL"); return; }
+
     sdspi_device_config_t slot = SDSPI_DEVICE_CONFIG_DEFAULT();
     slot.gpio_cs = PIN_SD_CS; slot.host_id = SD_SPI_HOST;
     esp_vfs_fat_sdmmc_mount_config_t mnt = {
         .format_if_mount_failed=false,.max_files=8,.allocation_unit_size=16*1024
     };
-    if (esp_vfs_fat_sdspi_mount(SD_MOUNT_POINT,&host,&slot,&mnt,&g_sd_card) != ESP_OK) {
-        ESP_LOGE(TAG,"SD mount failed"); lcd_line(0,"SD CARD ERROR"); lcd_line(1,"Check card!");
+    esp_err_t mret = esp_vfs_fat_sdspi_mount(SD_MOUNT_POINT,&host,&slot,&mnt,&g_sd_card);
+    ESP_LOGI(TAG,"SD mount result: %s", esp_err_to_name(mret));
+    if (mret != ESP_OK) {
+        ESP_LOGE(TAG,"SD mount failed: %s", esp_err_to_name(mret));
+        lcd_line(0,"SD CARD ERROR");
+        lcd_line(1,"Check card!");
         return;
     }
-    ESP_LOGI(TAG,"SD mounted");
+    ESP_LOGI(TAG,"SD mounted OK");
+    sdmmc_card_print_info(stdout, g_sd_card);
 }
 
 static void scan_files(void) {
     g_file_count = 0;
+    ESP_LOGI(TAG,"Scanning %s ...", SD_MOUNT_POINT);
     DIR *dp = opendir(SD_MOUNT_POINT);
-    if (!dp) return;
+    if (!dp) {
+        ESP_LOGE(TAG,"Cannot open SD root directory!");
+        return;
+    }
     struct dirent *e;
     while ((e=readdir(dp)) && g_file_count<64) {
+        ESP_LOGI(TAG,"  found: '%s' type=%d", e->d_name, e->d_type);
         int l = strlen(e->d_name);
         if (e->d_type==DT_REG && l>4 &&
             (strcasecmp(e->d_name+l-4,".bin")==0 ||
@@ -149,12 +165,14 @@ static void scan_files(void) {
              strcasecmp(e->d_name+l-4,".sky")==0 ||
              (l>5&&strcasecmp(e->d_name+l-5,".dump")==0))) {
             snprintf(g_file_list[g_file_count],300,"%s/%s",SD_MOUNT_POINT,e->d_name);
-            ESP_LOGI(TAG,"  [%d] %s",g_file_count,e->d_name);
+            ESP_LOGI(TAG,"  -> loaded as slot [%d]",g_file_count);
             g_file_count++;
+        } else {
+            ESP_LOGW(TAG,"  -> skipped (wrong type/extension)");
         }
     }
     closedir(dp);
-    ESP_LOGI(TAG,"%d file(s) found",g_file_count);
+    ESP_LOGI(TAG,"Scan done: %d Skylander file(s) found", g_file_count);
 }
 
 /* -----------------------------------------------------------------------
