@@ -310,6 +310,7 @@ static const char HTML_PAGE[] =
   "document.getElementById('pbadge').textContent=TN[parseInt(v)];"
   "await fetch('/api/portaltype',{method:'POST',"
     "headers:{'Content-Type':'application/json'},body:JSON.stringify({type:parseInt(v)})});"
+  "st('Portal type saved — unplug & replug Pico to apply',1);"
 "}"
 
 "function st(m,ok){"

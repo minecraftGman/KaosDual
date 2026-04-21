@@ -50,11 +50,10 @@ static uint8_t load_portal_type(void) {
     return 3; /* default: Imaginators */
 }
 
-static void save_and_reboot_portal_type(uint8_t type) {
+static void save_portal_type(uint8_t type) {
     watchdog_hw->scratch[4] = PORTAL_TYPE_MAGIC;
     watchdog_hw->scratch[5] = type;
-    watchdog_reboot(0, 0, 10); /* reboot in 10ms */
-    while (1) tight_loop_contents(); /* wait for reboot */
+    /* Type takes effect on next power cycle — no reboot needed */
 }
 
 static volatile uint8_t g_portal_type     = 3;
@@ -376,15 +375,15 @@ int main(void) {
     while (true) {
         tud_task();
 
-        /* Handle portal type change — save to scratch and reboot */
+        /* Handle portal type change — save for next power cycle */
         if (g_type_changed) {
             g_type_changed = false;
+            save_portal_type(g_pending_type);
+            /* Blink LED to confirm saved */
             gpio_put(PICO_DEFAULT_LED_PIN, 1);
-            sleep_ms(100);
-            /* save_and_reboot_portal_type saves type then reboots the Pico.
-             * On reboot load_portal_type() reads it back before USB init. */
-            save_and_reboot_portal_type(g_pending_type);
-            /* never reached */
+            sleep_ms(200);
+            gpio_put(PICO_DEFAULT_LED_PIN, 0);
+            /* NOTE: new type takes effect on next power cycle */
         }
 
         if (tud_hid_ready() && g_response_ready) {
