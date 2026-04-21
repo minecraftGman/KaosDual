@@ -10,7 +10,7 @@ idf_component_register(
         "."
     REQUIRES
         driver
-        fatfs
+        spiffs
         esp_timer
         log
         vfs

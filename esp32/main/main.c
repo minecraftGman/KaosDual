@@ -1,24 +1,15 @@
 /*
  * KAOS ESP32 — main.c
  *
- * This chip's only jobs:
- *   1. Host a WiFi Access Point
- *   2. Serve the web UI for picking/loading Skylanders
- *   3. Read Skylander files from SD card
- *   4. Push raw dumps to the Pi Pico over UART2
- *   5. Receive write-backs from the Pico and save them to SD
- *   6. Show the AP name and IP on the LCD
+ * Storage: SPIFFS on internal flash (no SD card needed)
+ * Files uploaded via web UI browser, stored in /spiffs/
+ * Files downloadable after game progress is saved back via Pico write-backs
  *
- * No Python. No proxy. No USB.
- * The Pico handles all USB HID portal duties.
- *
- * Wiring:
+ * Wiring (much simpler — no SD card):
  *   ESP32 GPIO17 (TX2) ──→ Pico GPIO5 (UART1 RX)
  *   ESP32 GPIO16 (RX2) ←── Pico GPIO4 (UART1 TX)
  *   ESP32 GND          ─── Pico GND
- *
- *   SD  MOSI=13  MISO=12  CLK=14  CS=15
- *   LCD SDA=21   SCL=22   addr=0x27
+ *   LCD SDA=GPIO21   SCL=GPIO22   I2C addr=0x27
  */
 
 #include <stdio.h>
@@ -33,10 +24,7 @@
 #include "esp_netif.h"
 #include "esp_event.h"
 #include "driver/i2c.h"
-#include "driver/spi_master.h"
-#include "driver/sdspi_host.h"
-#include "esp_vfs_fat.h"
-#include "sdmmc_cmd.h"
+#include "esp_spiffs.h"
 
 #include "Skylander.h"
 #include "web_ui.h"
@@ -45,31 +33,25 @@
 static const char *TAG = "KAOS-ESP32";
 
 /* -----------------------------------------------------------------------
- * Config — change pins here if needed
+ * Config — edit these
  * ----------------------------------------------------------------------- */
 #define WIFI_AP_SSID     "KAOS-Portal"
-#define WIFI_AP_PASSWORD "skylands1"      /* shown on LCD — change this to whatever you want */
+#define WIFI_AP_PASSWORD "skylands1"   /* shown on LCD — change to whatever you want */
 #define WIFI_AP_CHANNEL  6
 #define PORTAL_IP        "192.168.4.1"
-
-#define SD_SPI_HOST      HSPI_HOST
-#define PIN_SD_MOSI      13
-#define PIN_SD_MISO      19
-#define PIN_SD_CLK       14
-#define PIN_SD_CS        15
-#define SD_MOUNT_POINT   "/sdcard"
+#define SPIFFS_MOUNT     "/spiffs"
 
 #define I2C_PORT         I2C_NUM_0
 #define PIN_I2C_SDA      21
 #define PIN_I2C_SCL      22
-#define LCD_I2C_ADDR     0x27           /* try 0x3F if blank */
+#define LCD_I2C_ADDR     0x27          /* try 0x3F if blank */
 
 /* -----------------------------------------------------------------------
  * Globals (shared with web_ui.c and pico_bridge.c)
  * ----------------------------------------------------------------------- */
 SemaphoreHandle_t g_sky_mutex;
 int               g_file_count = 0;
-char              g_file_list[64][300];
+char              g_file_list[64][64];   /* basename only, max 63 chars */
 
 /* -----------------------------------------------------------------------
  * LCD1602 via PCF8574 I2C backpack
@@ -111,72 +93,59 @@ static void lcd_line(uint8_t row, const char *s) {
 }
 
 /* -----------------------------------------------------------------------
- * SD card
+ * SPIFFS
  * ----------------------------------------------------------------------- */
-static sdmmc_card_t *g_sd_card = NULL;
-
-static void sd_init(void) {
-    ESP_LOGI(TAG,"SD init: MOSI=%d MISO=%d CLK=%d CS=%d",
-             PIN_SD_MOSI, PIN_SD_MISO, PIN_SD_CLK, PIN_SD_CS);
-
-    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.slot = SD_SPI_HOST;
-    /* Lower clock speed significantly — breadboard wires cause CRC errors
-     * at the default 20MHz. 4MHz is reliable on most setups. */
-    host.max_freq_khz = 4000;
-
-    spi_bus_config_t bus = {
-        .mosi_io_num=PIN_SD_MOSI,.miso_io_num=PIN_SD_MISO,
-        .sclk_io_num=PIN_SD_CLK,.quadwp_io_num=-1,.quadhd_io_num=-1,
-        .max_transfer_sz=4096,
+static void spiffs_init(void) {
+    esp_vfs_spiffs_conf_t conf = {
+        .base_path              = SPIFFS_MOUNT,
+        .partition_label        = "spiffs",
+        .max_files              = 20,
+        .format_if_mount_failed = true,
     };
-    esp_err_t ret = spi_bus_initialize(SD_SPI_HOST, &bus, SDSPI_DEFAULT_DMA);
-    ESP_LOGI(TAG,"SPI bus init: %s", esp_err_to_name(ret));
-    if (ret != ESP_OK) { lcd_line(0,"SPI BUS FAIL"); return; }
-
-    sdspi_device_config_t slot = SDSPI_DEVICE_CONFIG_DEFAULT();
-    slot.gpio_cs = PIN_SD_CS; slot.host_id = SD_SPI_HOST;
-    esp_vfs_fat_sdmmc_mount_config_t mnt = {
-        .format_if_mount_failed=false,.max_files=8,.allocation_unit_size=16*1024
-    };
-    esp_err_t mret = esp_vfs_fat_sdspi_mount(SD_MOUNT_POINT,&host,&slot,&mnt,&g_sd_card);
-    ESP_LOGI(TAG,"SD mount result: %s", esp_err_to_name(mret));
-    if (mret != ESP_OK) {
-        ESP_LOGE(TAG,"SD mount failed: %s", esp_err_to_name(mret));
-        lcd_line(0,"SD CARD ERROR");
-        lcd_line(1,"Check card!");
+    esp_err_t ret = esp_vfs_spiffs_register(&conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "SPIFFS failed: %s", esp_err_to_name(ret));
+        lcd_line(0, "SPIFFS ERROR");
         return;
     }
-    ESP_LOGI(TAG,"SD mounted OK");
-    sdmmc_card_print_info(stdout, g_sd_card);
+    size_t total = 0, used = 0;
+    esp_spiffs_info("spiffs", &total, &used);
+    ESP_LOGI(TAG, "SPIFFS: %u KB total, %u KB used",
+             (unsigned)(total/1024), (unsigned)(used/1024));
 }
 
-static void scan_files(void) {
+/* -----------------------------------------------------------------------
+ * File scan
+ * ----------------------------------------------------------------------- */
+static bool is_sky_file(const char *n) {
+    int l = strlen(n);
+    return l > 4 && (
+        strcasecmp(n+l-4, ".bin")  == 0 ||
+        strcasecmp(n+l-4, ".dmp")  == 0 ||
+        strcasecmp(n+l-4, ".sky")  == 0 ||
+        (l > 5 && strcasecmp(n+l-5, ".dump") == 0));
+}
+
+void scan_files(void) {
     g_file_count = 0;
-    ESP_LOGI(TAG,"Scanning %s ...", SD_MOUNT_POINT);
-    DIR *dp = opendir(SD_MOUNT_POINT);
-    if (!dp) {
-        ESP_LOGE(TAG,"Cannot open SD root directory!");
-        return;
-    }
+    DIR *dp = opendir(SPIFFS_MOUNT);
+    if (!dp) { ESP_LOGE(TAG, "Cannot open SPIFFS"); return; }
     struct dirent *e;
-    while ((e=readdir(dp)) && g_file_count<64) {
-        ESP_LOGI(TAG,"  found: '%s' type=%d", e->d_name, e->d_type);
-        int l = strlen(e->d_name);
-        if (e->d_type==DT_REG && l>4 &&
-            (strcasecmp(e->d_name+l-4,".bin")==0 ||
-             strcasecmp(e->d_name+l-4,".dmp")==0 ||
-             strcasecmp(e->d_name+l-4,".sky")==0 ||
-             (l>5&&strcasecmp(e->d_name+l-5,".dump")==0))) {
-            snprintf(g_file_list[g_file_count],300,"%s/%s",SD_MOUNT_POINT,e->d_name);
-            ESP_LOGI(TAG,"  -> loaded as slot [%d]",g_file_count);
+    while ((e = readdir(dp)) && g_file_count < 64) {
+        if (is_sky_file(e->d_name)) {
+            strncpy(g_file_list[g_file_count], e->d_name, 63);
+            g_file_list[g_file_count][63] = '\0';
+            ESP_LOGI(TAG, "  [%d] %s", g_file_count, e->d_name);
             g_file_count++;
-        } else {
-            ESP_LOGW(TAG,"  -> skipped (wrong type/extension)");
         }
     }
     closedir(dp);
-    ESP_LOGI(TAG,"Scan done: %d Skylander file(s) found", g_file_count);
+    ESP_LOGI(TAG, "%d file(s)", g_file_count);
+}
+
+/* Build full SPIFFS path from a basename */
+void spiffs_full_path(const char *basename, char *out, size_t out_len) {
+    snprintf(out, out_len, "%s/%s", SPIFFS_MOUNT, basename);
 }
 
 /* -----------------------------------------------------------------------
@@ -185,9 +154,9 @@ static void scan_files(void) {
 static void wifi_event_handler(void *arg, esp_event_base_t base,
                                int32_t id, void *data) {
     if (id == WIFI_EVENT_AP_STACONNECTED)
-        ESP_LOGI(TAG,"Device connected to AP");
+        ESP_LOGI(TAG, "Client connected");
     else if (id == WIFI_EVENT_AP_STADISCONNECTED)
-        ESP_LOGI(TAG,"Device disconnected from AP");
+        ESP_LOGI(TAG, "Client disconnected");
 }
 
 static void wifi_ap_init(void) {
@@ -205,53 +174,51 @@ static void wifi_ap_init(void) {
             .channel        = WIFI_AP_CHANNEL,
             .password       = WIFI_AP_PASSWORD,
             .max_connection = 4,
-            .authmode       = strlen(WIFI_AP_PASSWORD) ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN,
+            .authmode       = strlen(WIFI_AP_PASSWORD) ?
+                              WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN,
         },
     };
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wcfg));
     ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_LOGI(TAG,"AP '%s' started, IP: %s", WIFI_AP_SSID, PORTAL_IP);
+    ESP_LOGI(TAG, "AP '%s' ready at %s", WIFI_AP_SSID, PORTAL_IP);
 }
 
 /* -----------------------------------------------------------------------
  * app_main
  * ----------------------------------------------------------------------- */
 void app_main(void) {
-    ESP_LOGI(TAG,"=== KAOS Dual-Board Portal ===");
+    ESP_LOGI(TAG, "=== KAOS Portal (SPIFFS) ===");
 
     /* NVS */
     esp_err_t nvs = nvs_flash_init();
-    if (nvs == ESP_ERR_NVS_NO_FREE_PAGES || nvs == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        nvs_flash_erase(); nvs_flash_init();
+    if (nvs == ESP_ERR_NVS_NO_FREE_PAGES ||
+        nvs == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_flash_init();
     }
 
     /* I2C + LCD */
     i2c_config_t ic = {
-        .mode=I2C_MODE_MASTER,
-        .sda_io_num=PIN_I2C_SDA,.scl_io_num=PIN_I2C_SCL,
-        .sda_pullup_en=GPIO_PULLUP_ENABLE,.scl_pullup_en=GPIO_PULLUP_ENABLE,
-        .master.clk_speed=100000,
+        .mode             = I2C_MODE_MASTER,
+        .sda_io_num       = PIN_I2C_SDA,
+        .scl_io_num       = PIN_I2C_SCL,
+        .sda_pullup_en    = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en    = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = 100000,
     };
-    i2c_param_config(I2C_PORT,&ic);
-    i2c_driver_install(I2C_PORT,I2C_MODE_MASTER,0,0,0);
+    i2c_param_config(I2C_PORT, &ic);
+    i2c_driver_install(I2C_PORT, I2C_MODE_MASTER, 0, 0, 0);
     lcd_init();
-    lcd_line(0,"KAOS Portal");
-    lcd_line(1,"Starting...");
+    lcd_line(0, "KAOS Portal");
+    lcd_line(1, "Starting...");
 
     /* Mutex */
     g_sky_mutex = xSemaphoreCreateMutex();
 
-    /* SD */
-    sd_init();
-    if (g_sd_card) {
-        scan_files();
-        char msg[17];
-        snprintf(msg,sizeof(msg),"%d file%s found",
-                 g_file_count, g_file_count==1?"":"s");
-        lcd_line(1,msg);
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
+    /* SPIFFS — mounts internal flash partition */
+    spiffs_init();
+    scan_files();
 
     /* Pico bridge (UART2) */
     pico_bridge_init();
@@ -259,17 +226,15 @@ void app_main(void) {
     /* WiFi AP */
     wifi_ap_init();
 
-    /* HTTP server */
+    /* Web UI */
     web_ui_start();
 
-    /* LCD: show AP name and password so only physical access reveals it */
+    /* LCD: show AP name + password */
     lcd_line(0, WIFI_AP_SSID);
     lcd_line(1, "pw:" WIFI_AP_PASSWORD);
 
-    ESP_LOGI(TAG,"Ready.");
-    ESP_LOGI(TAG,"  WiFi: '%s'", WIFI_AP_SSID);
-    ESP_LOGI(TAG,"  Web UI: http://%s", PORTAL_IP);
-    ESP_LOGI(TAG,"  Pico: UART2 TX=GPIO%d RX=GPIO%d", 17, 16);
+    ESP_LOGI(TAG, "Ready. WiFi: '%s'  URL: http://%s",
+             WIFI_AP_SSID, PORTAL_IP);
 
     while (1) vTaskDelay(pdMS_TO_TICKS(10000));
 }

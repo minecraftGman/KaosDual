@@ -1,12 +1,9 @@
 # Target: classic ESP32
 CONFIG_IDF_TARGET="esp32"
 
-# UART0 is used for flashing/monitor, we use UART2 for the proxy protocol
-# (so you can still see logs on UART0 while the proxy runs on UART2)
-
-# FatFS long filenames
-CONFIG_FATFS_LFN_HEAP=y
-CONFIG_FATFS_MAX_LFN=255
+# SPIFFS for storing Skylander dump files in flash
+CONFIG_SPIFFS_USE_MAGIC=y
+CONFIG_SPIFFS_USE_MAGIC_LENGTH=y
 
 # Main task stack
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
@@ -15,15 +12,19 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
 CONFIG_ESP_WIFI_ENABLED=y
 
-# HTTP server
+# HTTP server — larger buffer for file uploads (1KB dumps + multipart overhead)
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_HTTPD_MAX_URI_LEN=512
+CONFIG_HTTPD_CONN_CLOSE_HEADER=y
+CONFIG_HTTPD_WS_SUPPORT=n
 
-# NVS (needed by WiFi)
+# NVS (needed by WiFi + portal type persistence)
 CONFIG_NVS_ENCRYPTION=n
 
-# Flash
+# Flash — 4MB with custom partition table
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # Logging level
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
