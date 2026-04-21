@@ -127,8 +127,13 @@ static void core1_uart_rx(void) {
                         break;
                     case MSG_SET_PORTAL_TYPE:
                         if (len >= 1) {
-                            g_pending_type = payload[0];
-                            g_type_changed = true;  /* core 0 will handle reconnect */
+                            uint8_t requested = payload[0];
+                            /* Only trigger reboot if type actually needs to change */
+                            if (requested != g_portal_type && requested <= 3) {
+                                g_pending_type = requested;
+                                g_type_changed = true;
+                            }
+                            /* If already the right type, do nothing — no reboot loop */
                         }
                         break;
                     default:
@@ -143,35 +148,67 @@ static void core1_uart_rx(void) {
 
 /* -----------------------------------------------------------------------
  * HID processing (core 0)
+ *
+ * Status packet format: S [b0] [b1] [b2] [b3] [seq] [active] 0x00...
+ *
+ * The 4 status bytes form a 32-bit array. Each Skylander uses 2 bits:
+ *   bits [2i+1 : 2i] where i = slot index (0-based)
+ *
+ *   00 = not present
+ *   01 = present (steady state)
+ *   11 = just arrived (one-shot, sent once when figure placed)
+ *   10 = just removed (one-shot, sent once when figure removed)
  * ----------------------------------------------------------------------- */
 
-/* Sequence counter for status reports — PS3 uses this to detect new events */
-static uint8_t g_status_seq = 0;
-
-/* Track previous slot state to detect arrivals/removals */
-static bool g_slot_prev_active[MAX_SLOTS] = {false};
+static uint8_t  g_status_seq    = 0;
+static bool     g_slot_was_loaded[MAX_SLOTS] = {false};
+static bool     g_slot_arrival_pending[MAX_SLOTS] = {false};
+static bool     g_slot_removal_pending[MAX_SLOTS] = {false};
 
 static void build_status_report(uint8_t r[PORTAL_HID_REPORT_LEN]) {
     memset(r, 0, PORTAL_HID_REPORT_LEN);
-    r[0] = RESP_STATUS;
+    r[0] = RESP_STATUS;  /* 'S' */
 
     uint32_t save = spin_lock_blocking(s_slot_lock);
-    uint8_t flags = 0;
-    for (int i = 0; i < MAX_SLOTS; i++) {
-        bool active = g_slots[i].loaded && g_slots[i].active;
-        if (active) flags |= (1 << i);
 
-        /* Detect arrival — set the "new tag" bit in upper nibble */
-        if (active && !g_slot_prev_active[i]) {
-            flags |= (1 << (i + 4));   /* arrival event bit */
+    uint32_t status_bits = 0;
+    for (int i = 0; i < MAX_SLOTS; i++) {
+        bool loaded = g_slots[i].loaded && g_slots[i].active;
+
+        if (loaded && !g_slot_was_loaded[i]) {
+            /* Just arrived — set both bits (11) for one cycle */
+            g_slot_arrival_pending[i] = true;
+            g_slot_removal_pending[i] = false;
+        } else if (!loaded && g_slot_was_loaded[i]) {
+            /* Just removed — set upper bit only (10) for one cycle */
+            g_slot_removal_pending[i] = true;
+            g_slot_arrival_pending[i] = false;
         }
-        g_slot_prev_active[i] = active;
+        g_slot_was_loaded[i] = loaded;
+
+        uint32_t bits = 0;
+        if (g_slot_arrival_pending[i]) {
+            bits = 0x3;  /* 11 — arrival */
+            g_slot_arrival_pending[i] = false;
+        } else if (g_slot_removal_pending[i]) {
+            bits = 0x2;  /* 10 — removal */
+            g_slot_removal_pending[i] = false;
+        } else if (loaded) {
+            bits = 0x1;  /* 01 — present */
+        }
+
+        status_bits |= (bits << (i * 2));
     }
+
     spin_unlock(s_slot_lock, save);
 
-    r[1] = flags;
-    r[2] = g_status_seq++;
-    /* r[3..] = 0x00 padding */
+    /* Pack 32-bit status into bytes 1-4 (little endian) */
+    r[1] = (status_bits >>  0) & 0xFF;
+    r[2] = (status_bits >>  8) & 0xFF;
+    r[3] = (status_bits >> 16) & 0xFF;
+    r[4] = (status_bits >> 24) & 0xFF;
+    r[5] = g_status_seq++;
+    r[6] = g_portal_active ? 0x01 : 0x00;
 }
 
 static void process_hid_out(const uint8_t *in, uint8_t r[PORTAL_HID_REPORT_LEN]) {
@@ -205,7 +242,9 @@ static void process_hid_out(const uint8_t *in, uint8_t r[PORTAL_HID_REPORT_LEN])
             break;
 
         case CMD_TAG_READ: {
-            uint8_t slot = (in[1] >> 4) & 0x0F;
+            /* Game sends index 0x10 for slot 0, 0x11 for slot 1, etc. */
+            uint8_t idx  = in[1];
+            uint8_t slot = (idx >= 0x10) ? (idx - 0x10) : idx;
             uint8_t blk  = in[2];
             r[0]=RESP_TAG_READ; r[1]=in[1]; r[2]=in[2];
             uint32_t save = spin_lock_blocking(s_slot_lock);
@@ -217,7 +256,8 @@ static void process_hid_out(const uint8_t *in, uint8_t r[PORTAL_HID_REPORT_LEN])
         }
 
         case CMD_TAG_WRITE: {
-            uint8_t slot = (in[1] >> 4) & 0x0F;
+            uint8_t idx  = in[1];
+            uint8_t slot = (idx >= 0x10) ? (idx - 0x10) : idx;
             uint8_t blk  = in[2];
             r[0]=RESP_TAG_WRITE; r[1]=in[1]; r[2]=in[2]; r[3]=0x00;
 
