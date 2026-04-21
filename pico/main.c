@@ -6,8 +6,9 @@
  *   - Receive Skylander dumps from ESP32 over UART1 (MSG_LOAD / MSG_UNLOAD)
  *   - Handle all HID commands from the game (read/write blocks, status)
  *   - Send MSG_WRITE_BACK to ESP32 when the game writes to a tag
+ *   - Switch portal type (descriptor) on demand via MSG_SET_PORTAL_TYPE
  *
- * Core 0: TinyUSB task + HID processing
+ * Core 0: TinyUSB task + HID processing + USB reconnect on type change
  * Core 1: UART RX from ESP32
  *
  * Wiring:
@@ -34,6 +35,20 @@
 #define KAOS_UART       uart1
 #define KAOS_UART_TX    4
 #define KAOS_UART_RX    5
+
+/* -----------------------------------------------------------------------
+ * Portal type — controls which USB descriptor is used.
+ * Read by usb_descriptors.c via portal_get_type().
+ *   0 = Spyro's Adventure / Giants
+ *   1 = Swap Force
+ *   2 = Trap Team (Traptanium)
+ *   3 = Imaginators / SuperChargers  (default)
+ * ----------------------------------------------------------------------- */
+static volatile uint8_t g_portal_type     = 3;
+static volatile bool    g_type_changed    = false;  /* set by core 1, read by core 0 */
+static volatile uint8_t g_pending_type    = 3;
+
+uint8_t portal_get_type(void) { return g_portal_type; }
 
 /* -----------------------------------------------------------------------
  * Portal HID commands
@@ -98,15 +113,9 @@ static void core1_uart_rx(void) {
                         if (len >= 1) slots_unload(payload[0]);
                         break;
                     case MSG_SET_PORTAL_TYPE:
-                        /* Portal type switching will be implemented as a
-                         * USB reconnect — for now store and act on next boot.
-                         * Simple approach: just store the type, full descriptor
-                         * switching requires USB re-enumeration. */
                         if (len >= 1) {
-                            /* Flash onboard LED to confirm receipt */
-                            gpio_put(PICO_DEFAULT_LED_PIN, 1);
-                            sleep_ms(100);
-                            gpio_put(PICO_DEFAULT_LED_PIN, 0);
+                            g_pending_type = payload[0];
+                            g_type_changed = true;  /* core 0 will handle reconnect */
                         }
                         break;
                     default:
@@ -258,6 +267,11 @@ int main(void) {
     int lock_num = spin_lock_claim_unused(true);
     s_slot_lock  = spin_lock_instance(lock_num);
 
+    /* Onboard LED for status indication */
+    gpio_init(PICO_DEFAULT_LED_PIN);
+    gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
+    gpio_put(PICO_DEFAULT_LED_PIN, 0);
+
     /* UART1 for ESP32 comms */
     uart_init(KAOS_UART, KAOS_BAUD);
     gpio_set_function(KAOS_UART_TX, GPIO_FUNC_UART);
@@ -281,6 +295,28 @@ int main(void) {
     uint32_t last_status_ms = 0;
     while (true) {
         tud_task();
+
+        /* Handle portal type change — disconnect, switch descriptor, reconnect */
+        if (g_type_changed) {
+            g_type_changed = false;
+            g_portal_active = false;
+
+            /* Blink LED to show type is switching */
+            gpio_put(PICO_DEFAULT_LED_PIN, 1);
+
+            /* Disconnect from USB */
+            tud_disconnect();
+            sleep_ms(500);
+
+            /* Apply new type — usb_descriptors.c reads portal_get_type() */
+            g_portal_type = g_pending_type;
+
+            /* Reconnect — host will re-enumerate with new descriptor */
+            tud_connect();
+            gpio_put(PICO_DEFAULT_LED_PIN, 0);
+
+            last_status_ms = to_ms_since_boot(get_absolute_time());
+        }
 
         if (tud_hid_ready() && g_response_ready) {
             tud_hid_report(0, g_hid_response, PORTAL_HID_REPORT_LEN);

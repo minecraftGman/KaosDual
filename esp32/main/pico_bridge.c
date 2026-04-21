@@ -14,10 +14,14 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include <string.h>
 #include <stdio.h>
 
 static const char *TAG = "PicoBridge";
+#define NVS_NAMESPACE   "kaos"
+#define NVS_KEY_PTYPE   "portal_type"
 
 #define BRIDGE_UART     UART_NUM_2
 #define PIN_TX          17
@@ -57,7 +61,19 @@ static void rx_task(void *arg) {
         switch (type) {
             case MSG_PICO_READY:
                 s_pico_ready = true;
-                ESP_LOGI(TAG, "Pico is ready");
+                ESP_LOGI(TAG, "Pico is ready — sending saved portal type");
+                /* Load saved portal type from NVS and send to Pico */
+                {
+                    nvs_handle_t nvs;
+                    uint8_t saved_type = 3; /* default: Imaginators */
+                    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
+                        uint8_t v = 3;
+                        if (nvs_get_u8(nvs, NVS_KEY_PTYPE, &v) == ESP_OK) saved_type = v;
+                        nvs_close(nvs);
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(300)); /* let Pico finish USB init */
+                    pico_bridge_set_portal_type(saved_type);
+                }
                 break;
 
             case MSG_WRITE_BACK: {
@@ -136,6 +152,14 @@ void pico_bridge_unload(uint8_t slot) {
 void pico_bridge_set_portal_type(uint8_t type) {
     send_frame(MSG_SET_PORTAL_TYPE, &type, 1);
     ESP_LOGI(TAG, "Sent portal type %d to Pico", type);
+
+    /* Persist to NVS so it survives power cycles */
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_set_u8(nvs, NVS_KEY_PTYPE, type);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
 }
 
 bool pico_bridge_is_ready(void) {

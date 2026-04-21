@@ -121,6 +121,10 @@ static void sd_init(void) {
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = SD_SPI_HOST;
+    /* Lower clock speed significantly — breadboard wires cause CRC errors
+     * at the default 20MHz. 4MHz is reliable on most setups. */
+    host.max_freq_khz = 4000;
+
     spi_bus_config_t bus = {
         .mosi_io_num=PIN_SD_MOSI,.miso_io_num=PIN_SD_MISO,
         .sclk_io_num=PIN_SD_CLK,.quadwp_io_num=-1,.quadhd_io_num=-1,
