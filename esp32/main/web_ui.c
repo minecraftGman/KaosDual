@@ -649,7 +649,7 @@ static esp_err_t handle_download(httpd_req_t *req) {
     /* Build a download filename */
     const char *base = strrchr(g_skylanders[slot].filename, '/');
     base = base ? base+1 : g_skylanders[slot].filename;
-    char cdispo[96];
+    char cdispo[320];
     snprintf(cdispo, sizeof(cdispo), "attachment; filename=\"%s\"", base);
 
     xSemaphoreGive(g_sky_mutex);
