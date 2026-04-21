@@ -48,7 +48,7 @@ static const char *TAG = "KAOS-ESP32";
  * Config — change pins here if needed
  * ----------------------------------------------------------------------- */
 #define WIFI_AP_SSID     "KAOS-Portal"
-#define WIFI_AP_PASSWORD ""              /* empty = open network */
+#define WIFI_AP_PASSWORD "skylands1"      /* shown on LCD — change this to whatever you want */
 #define WIFI_AP_CHANNEL  6
 #define PORTAL_IP        "192.168.4.1"
 
@@ -258,9 +258,9 @@ void app_main(void) {
     /* HTTP server */
     web_ui_start();
 
-    /* LCD: ready state */
+    /* LCD: show AP name and password so only physical access reveals it */
     lcd_line(0, WIFI_AP_SSID);
-    lcd_line(1, PORTAL_IP);
+    lcd_line(1, "pw:" WIFI_AP_PASSWORD);
 
     ESP_LOGI(TAG,"Ready.");
     ESP_LOGI(TAG,"  WiFi: '%s'", WIFI_AP_SSID);

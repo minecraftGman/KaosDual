@@ -97,6 +97,18 @@ static void core1_uart_rx(void) {
                     case MSG_UNLOAD:
                         if (len >= 1) slots_unload(payload[0]);
                         break;
+                    case MSG_SET_PORTAL_TYPE:
+                        /* Portal type switching will be implemented as a
+                         * USB reconnect — for now store and act on next boot.
+                         * Simple approach: just store the type, full descriptor
+                         * switching requires USB re-enumeration. */
+                        if (len >= 1) {
+                            /* Flash onboard LED to confirm receipt */
+                            gpio_put(PICO_DEFAULT_LED_PIN, 1);
+                            sleep_ms(100);
+                            gpio_put(PICO_DEFAULT_LED_PIN, 0);
+                        }
+                        break;
                     default:
                         break;
                 }

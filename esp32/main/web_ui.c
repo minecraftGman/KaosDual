@@ -29,6 +29,16 @@ extern SemaphoreHandle_t g_sky_mutex;
 extern int  g_file_count;
 extern char g_file_list[64][300];
 
+/* Portal type — sent to Pico so it knows which USB descriptor to use */
+typedef enum {
+    PORTAL_TYPE_SSA      = 0,   /* Spyro's Adventure / Giants */
+    PORTAL_TYPE_SWAP     = 1,   /* Swap Force */
+    PORTAL_TYPE_TRAP     = 2,   /* Trap Team (Traptanium) */
+    PORTAL_TYPE_IMAGINATORS = 3 /* SuperChargers / Imaginators */
+} portal_type_t;
+
+static portal_type_t g_portal_type = PORTAL_TYPE_IMAGINATORS;
+
 /* -----------------------------------------------------------------------
  * The HTML page — single-file, zero external dependencies.
  * Stored as a string literal split across chunks to stay within
@@ -42,76 +52,85 @@ static const char HTML_PAGE[] =
 "<title>KAOS Portal Manager</title>"
 "<style>"
 ":root{"
-  "--bg:#0a0a1a;"
-  "--card:#12122a;"
-  "--border:#2a2a5a;"
-  "--accent:#7c3aed;"
-  "--accent2:#a855f7;"
+  "--bg:#0a0a1a;--card:#12122a;--border:#2a2a5a;"
+  "--accent:#7c3aed;--accent2:#a855f7;"
   "--fire:#ef4444;--water:#3b82f6;--earth:#a16207;"
   "--air:#06b6d4;--life:#22c55e;--undead:#8b5cf6;"
-  "--magic:#ec4899;--tech:#f59e0b;--light:#fde68a;--dark:#374151;"
+  "--magic:#ec4899;--tech:#f59e0b;--light:#fde68a;--dark:#6b7280;"
   "--text:#e2e8f0;--muted:#64748b;"
 "}"
 "*{box-sizing:border-box;margin:0;padding:0}"
 "body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;"
-  "min-height:100vh;padding:20px}"
+  "min-height:100vh;padding:16px}"
 "h1{text-align:center;font-size:1.8rem;margin-bottom:4px;"
-  "background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;"
-  "-webkit-text-fill-color:transparent;background-clip:text}"
-".subtitle{text-align:center;color:var(--muted);font-size:.85rem;margin-bottom:24px}"
-".slots{display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:700px;margin:0 auto 24px}"
+  "background:linear-gradient(135deg,var(--accent),var(--accent2));"
+  "-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}"
+".subtitle{text-align:center;color:var(--muted);font-size:.85rem;margin-bottom:16px}"
+/* Portal type bar */
+".portal-bar{max-width:700px;margin:0 auto 20px;background:var(--card);"
+  "border:1px solid var(--border);border-radius:12px;padding:14px 16px;"
+  "display:flex;align-items:center;gap:12px}"
+".portal-bar label{font-size:.8rem;color:var(--muted);white-space:nowrap}"
+".portal-bar select{flex:1;padding:8px 10px;background:#1a1a35;"
+  "border:1px solid var(--border);border-radius:8px;color:var(--text);"
+  "font-size:.9rem;cursor:pointer}"
+".portal-bar select:focus{outline:none;border-color:var(--accent)}"
+".portal-badge{font-size:.7rem;padding:3px 8px;border-radius:20px;"
+  "background:var(--accent);color:#fff;white-space:nowrap}"
+/* Slots */
+".slots{display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:700px;margin:0 auto 16px}"
 "@media(max-width:500px){.slots{grid-template-columns:1fr}}"
-".slot-card{"
-  "background:var(--card);border:2px solid var(--border);"
-  "border-radius:16px;padding:20px;transition:border-color .3s}"
+".slot-card{background:var(--card);border:2px solid var(--border);"
+  "border-radius:16px;padding:18px;transition:border-color .3s}"
 ".slot-card.active{border-color:var(--accent)}"
-".slot-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}"
+".slot-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}"
 ".slot-label{font-size:.75rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}"
 ".slot-num{font-size:1.5rem;font-weight:700;color:var(--accent2)}"
-".sky-portrait{"
-  "width:100%;aspect-ratio:1;border-radius:12px;margin-bottom:12px;"
-  "display:flex;align-items:center;justify-content:center;"
-  "font-size:4rem;background:linear-gradient(135deg,#1e1e3a,#2d2d5a);"
+".sky-portrait{width:100%;aspect-ratio:1;border-radius:12px;margin-bottom:10px;"
+  "display:flex;align-items:center;justify-content:center;font-size:3.5rem;"
+  "background:linear-gradient(135deg,#1e1e3a,#2d2d5a);"
   "border:1px solid var(--border);position:relative;overflow:hidden}"
-".sky-portrait .element-bg{"
-  "position:absolute;inset:0;opacity:.15;border-radius:12px}"
-".sky-portrait .emoji{position:relative;z-index:1;filter:drop-shadow(0 0 12px rgba(168,85,247,.5))}"
-".sky-name{font-size:1.1rem;font-weight:600;text-align:center;margin-bottom:4px}"
-".sky-element{"
-  "text-align:center;font-size:.75rem;font-weight:600;text-transform:uppercase;"
-  "letter-spacing:.08em;margin-bottom:12px;padding:2px 10px;border-radius:20px;"
+".sky-portrait .element-bg{position:absolute;inset:0;opacity:.15;border-radius:12px}"
+".sky-portrait .emoji{position:relative;z-index:1}"
+".sky-name{font-size:1rem;font-weight:600;text-align:center;margin-bottom:4px}"
+".sky-element{text-align:center;font-size:.7rem;font-weight:600;text-transform:uppercase;"
+  "letter-spacing:.08em;margin-bottom:10px;padding:2px 10px;border-radius:20px;"
   "display:inline-block;width:100%}"
-".sky-file{font-size:.7rem;color:var(--muted);text-align:center;margin-bottom:14px;"
+".sky-file{font-size:.68rem;color:var(--muted);text-align:center;margin-bottom:12px;"
   "overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
-".empty-state{text-align:center;color:var(--muted);padding:20px 0}"
-".empty-state .empty-icon{font-size:3rem;margin-bottom:8px;opacity:.3}"
-".empty-state p{font-size:.85rem}"
-"select{"
-  "width:100%;padding:10px 12px;background:#1a1a35;border:1px solid var(--border);"
-  "border-radius:8px;color:var(--text);font-size:.85rem;margin-bottom:10px;cursor:pointer}"
+".empty-state{text-align:center;color:var(--muted);padding:16px 0}"
+".empty-state .empty-icon{font-size:2.5rem;margin-bottom:6px;opacity:.3}"
+".empty-state p{font-size:.82rem}"
+/* Select dropdown */
+"select{width:100%;padding:9px 12px;background:#1a1a35;"
+  "border:1px solid var(--border);border-radius:8px;color:var(--text);"
+  "font-size:.85rem;margin-bottom:10px;cursor:pointer;appearance:none;"
+  "background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2364748b' stroke-width='1.5' fill='none'/%3E%3C/svg%3E\");"
+  "background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}"
 "select:focus{outline:none;border-color:var(--accent)}"
+".no-files{font-size:.8rem;color:var(--muted);text-align:center;padding:8px;"
+  "background:#0f0f20;border-radius:8px;margin-bottom:10px;"
+  "border:1px dashed var(--border)}"
+/* Buttons */
 ".btn{width:100%;padding:10px;border:none;border-radius:8px;font-size:.9rem;"
   "font-weight:600;cursor:pointer;transition:all .2s;letter-spacing:.03em}"
 ".btn-load{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}"
 ".btn-load:hover{opacity:.9;transform:translateY(-1px)}"
-".btn-unload{background:transparent;border:1px solid var(--border);color:var(--muted);"
-  "margin-top:8px}"
+".btn-load:disabled{opacity:.4;cursor:not-allowed;transform:none}"
+".btn-unload{background:transparent;border:1px solid var(--border);color:var(--muted);margin-top:8px}"
 ".btn-unload:hover{border-color:#ef4444;color:#ef4444}"
-".btn-sense{"
-  "display:block;width:100%;max-width:700px;margin:0 auto 16px;"
+".btn-sense{display:block;width:100%;max-width:700px;margin:0 auto 14px;"
   "padding:12px;background:transparent;border:1px solid var(--accent);"
   "border-radius:10px;color:var(--accent2);font-size:.9rem;font-weight:600;"
   "cursor:pointer;transition:all .2s}"
 ".btn-sense:hover{background:var(--accent);color:#fff}"
-".status-bar{"
-  "max-width:700px;margin:0 auto;padding:10px 16px;"
+".status-bar{max-width:700px;margin:0 auto;padding:10px 16px;"
   "background:var(--card);border:1px solid var(--border);"
   "border-radius:8px;font-size:.8rem;color:var(--muted);"
   "display:flex;align-items:center;gap:8px}"
 ".status-dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0}"
 ".status-dot.ok{background:#22c55e;box-shadow:0 0 6px #22c55e}"
 ".status-dot.err{background:#ef4444}"
-".loading{opacity:.5;pointer-events:none}"
 /* Element colours */
 ".el-Fire{color:var(--fire)}.el-bg-Fire{background:var(--fire)}"
 ".el-Water{color:var(--water)}.el-bg-Water{background:var(--water)}"
@@ -126,23 +145,48 @@ static const char HTML_PAGE[] =
 "</style></head><body>"
 "<h1>&#9670; KAOS Portal</h1>"
 "<p class='subtitle'>Skylander Portal Manager</p>"
-"<div class='slots' id='slots'>"
-  "<div class='slot-card' id='slot0'><div class='slot-header'>"
-    "<span class='slot-label'>Player 1</span>"
-    "<span class='slot-num'>P1</span></div>"
-    "<div id='slot0-content'></div></div>"
-  "<div class='slot-card' id='slot1'><div class='slot-header'>"
-    "<span class='slot-label'>Player 2</span>"
-    "<span class='slot-num'>P2</span></div>"
-    "<div id='slot1-content'></div></div>"
+
+/* Portal type selector */
+"<div class='portal-bar'>"
+  "<label>Portal type</label>"
+  "<select id='portal-type' onchange='setPortalType(this.value)'>"
+    "<option value='3'>Imaginators / SuperChargers</option>"
+    "<option value='1'>Swap Force</option>"
+    "<option value='0'>Spyro's Adventure / Giants</option>"
+    "<option value='2'>Trap Team (Traptanium)</option>"
+  "</select>"
+  "<span class='portal-badge' id='type-badge'>Imaginators</span>"
 "</div>"
+
+/* Slot cards */
+"<div class='slots' id='slots'>"
+  "<div class='slot-card' id='slot0'>"
+    "<div class='slot-header'>"
+      "<span class='slot-label'>Player 1</span>"
+      "<span class='slot-num'>P1</span>"
+    "</div>"
+    "<div id='slot0-content'></div>"
+  "</div>"
+  "<div class='slot-card' id='slot1'>"
+    "<div class='slot-header'>"
+      "<span class='slot-label'>Player 2</span>"
+      "<span class='slot-num'>P2</span>"
+    "</div>"
+    "<div id='slot1-content'></div>"
+  "</div>"
+"</div>"
+
 "<button class='btn-sense' onclick='sendSense()'>&#8635; Force Portal Sense</button>"
-"<div class='status-bar'><div class='status-dot' id='status-dot'></div>"
-  "<span id='status-text'>Connecting...</span></div>"
+"<div class='status-bar'>"
+  "<div class='status-dot' id='status-dot'></div>"
+  "<span id='status-text'>Connecting...</span>"
+"</div>"
+
 "<script>"
 "const ELEMENTS={'Fire':'🔥','Water':'💧','Earth':'🪨','Air':'🌪️',"
   "'Life':'🌿','Undead':'💀','Magic':'✨','Tech':'⚙️','Light':'☀️','Dark':'🌑'};"
-"let state={files:[],slots:[{loaded:false},{loaded:false}]};"
+"const TYPE_NAMES={0:\"Spyro's Adv / Giants\",1:'Swap Force',2:'Trap Team',3:'Imaginators'};"
+"let state={files:[],slots:[{loaded:false},{loaded:false}],portal_type:3};"
 
 "async function fetchState(){"
   "try{"
@@ -150,6 +194,8 @@ static const char HTML_PAGE[] =
     "if(!r.ok)throw new Error();"
     "state=await r.json();"
     "renderSlots();"
+    "document.getElementById('portal-type').value=state.portal_type||3;"
+    "document.getElementById('type-badge').textContent=TYPE_NAMES[state.portal_type||3];"
     "setStatus('Connected',true);"
   "}catch(e){setStatus('No connection',false)}"
 "}"
@@ -159,52 +205,54 @@ static const char HTML_PAGE[] =
     "const s=state.slots[i];"
     "const el=document.getElementById('slot'+i+'-content');"
     "const card=document.getElementById('slot'+i);"
+    "card.classList.toggle('active',s.loaded);"
+    "let html='';"
     "if(s.loaded){"
-      "card.classList.add('active');"
       "const elem=s.element||'Magic';"
       "const emoji=ELEMENTS[elem]||'✨';"
-      "el.innerHTML="
-        "`<div class='sky-portrait'>`"
+      "html+=`<div class='sky-portrait'>`"
         "+`<div class='element-bg el-bg-${elem}'></div>`"
         "+`<div class='emoji'>${emoji}</div></div>`"
-        "+`<div class='sky-name'>${s.name||'Unknown Skylander'}</div>`"
+        "+`<div class='sky-name'>${s.name||'Unknown'}</div>`"
         "+`<div class='sky-element el-${elem}'>${elem}</div>`"
-        "+`<div class='sky-file'>${s.filename||''}</div>`"
-        "+fileSelect(i,s.filename)"
-        "+`<button class='btn btn-load' onclick='loadSlot(${i})'>Load Selected</button>`"
-        "+`<button class='btn btn-unload' onclick='unloadSlot(${i})'>Unload</button>`;"
+        "+`<div class='sky-file'>${s.filename||''}</div>`;"
     "}else{"
-      "card.classList.remove('active');"
-      "el.innerHTML="
-        "`<div class='empty-state'>`"
-        "+`<div class='empty-icon'>👻</div>`"
-        "+`<p>No Skylander loaded</p></div>`"
-        "+fileSelect(i,null)"
-        "+`<button class='btn btn-load' onclick='loadSlot(${i})'>Load</button>`;"
+      "html+=`<div class='empty-state'><div class='empty-icon'>👻</div><p>No Skylander loaded</p></div>`;"
     "}"
+    /* File dropdown */
+    "if(state.files&&state.files.length>0){"
+      "html+=`<select id='sel${i}'>`;"
+      "state.files.forEach(f=>{html+=`<option value='${f}'>${f}</option>`;});"
+      "html+='</select>';"
+      "html+=`<button class='btn btn-load' onclick='loadSlot(${i})'>Load</button>`;"
+    "}else{"
+      "html+=`<div class='no-files'>No files on SD card</div>`;"
+      "html+=`<button class='btn btn-load' disabled>Load</button>`;"
+    "}"
+    "if(s.loaded)html+=`<button class='btn btn-unload' onclick='unloadSlot(${i})'>Unload</button>`;"
+    "el.innerHTML=html;"
   "}"
 "}"
 
-"function fileSelect(slot,current){"
-  "if(!state.files||!state.files.length)"
-    "return `<p style='color:var(--muted);font-size:.8rem;margin-bottom:10px;text-align:center'>No files on SD card</p>`;"
-  "let opts=state.files.map(f=>"
-    "`<option value='${f}' ${f===current?'selected':''}>${f}</option>`).join('');"
-  "return `<select id='sel${slot}'>${opts}</select>`;"
+"async function setPortalType(val){"
+  "const v=parseInt(val);"
+  "document.getElementById('type-badge').textContent=TYPE_NAMES[v];"
+  "await fetch('/api/portaltype',{method:'POST',"
+    "headers:{'Content-Type':'application/json'},"
+    "body:JSON.stringify({type:v})});"
 "}"
 
 "async function loadSlot(slot){"
   "const sel=document.getElementById('sel'+slot);"
   "if(!sel)return;"
-  "const file=sel.value;"
   "setStatus('Loading...',true);"
   "try{"
     "const r=await fetch('/api/load',{method:'POST',"
       "headers:{'Content-Type':'application/json'},"
-      "body:JSON.stringify({slot,file})});"
+      "body:JSON.stringify({slot,file:sel.value})});"
     "const j=await r.json();"
-    "if(j.ok){await fetchState();setStatus('Loaded '+file.split('/').pop(),true);}"
-    "else setStatus('Load failed: '+j.error,false);"
+    "if(j.ok){await fetchState();setStatus('Loaded '+sel.value,true);}"
+    "else setStatus('Load failed: '+(j.error||'unknown'),false);"
   "}catch(e){setStatus('Error',false)}"
 "}"
 
@@ -214,8 +262,7 @@ static const char HTML_PAGE[] =
     "await fetch('/api/unload',{method:'POST',"
       "headers:{'Content-Type':'application/json'},"
       "body:JSON.stringify({slot})});"
-    "await fetchState();"
-    "setStatus('Unloaded',true);"
+    "await fetchState();setStatus('Unloaded',true);"
   "}catch(e){setStatus('Error',false)}"
 "}"
 
@@ -226,12 +273,11 @@ static const char HTML_PAGE[] =
 
 "function setStatus(msg,ok){"
   "document.getElementById('status-text').textContent=msg;"
-  "const d=document.getElementById('status-dot');"
-  "d.className='status-dot '+(ok?'ok':'err');"
+  "document.getElementById('status-dot').className='status-dot '+(ok?'ok':'err');"
 "}"
 
 "fetchState();"
-"setInterval(fetchState,3000);"
+"setInterval(fetchState,4000);"
 "</script></body></html>";
 
 /* -----------------------------------------------------------------------
@@ -303,7 +349,7 @@ static esp_err_t handle_state(httpd_req_t *req) {
         }
     }
 
-    n += snprintf(buf+n, sizeof(buf)-n, "]}");
+    n += snprintf(buf+n, sizeof(buf)-n, "],\"portal_type\":%d}", (int)g_portal_type);
     xSemaphoreGive(g_sky_mutex);
 
     httpd_resp_set_type(req, "application/json");
@@ -442,6 +488,34 @@ static esp_err_t handle_sense(httpd_req_t *req) {
 }
 
 /* -----------------------------------------------------------------------
+ * POST /api/portaltype  — body: {"type":0}
+ * ----------------------------------------------------------------------- */
+static esp_err_t handle_portaltype(httpd_req_t *req) {
+    char body[64] = {0};
+    int len = req->content_len;
+    if (len > 0 && len < (int)sizeof(body)) httpd_req_recv(req, body, len);
+
+    char *pt = strstr(body, "\"type\"");
+    if (pt) {
+        int t = atoi(pt + 7);
+        if (t >= 0 && t <= 3) {
+            g_portal_type = (portal_type_t)t;
+            /* Tell the Pico to switch portal type */
+            uint8_t type_byte = (uint8_t)t;
+            /* Reuse MSG_STATUS channel — send a special 2-byte payload:
+             * [0xFF] = portal type change sentinel, [type_byte] = new type */
+            /* We signal via pico_bridge directly */
+            extern void pico_bridge_set_portal_type(uint8_t t);
+            pico_bridge_set_portal_type(type_byte);
+            ESP_LOGI(TAG, "Portal type → %d", t);
+        }
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+/* -----------------------------------------------------------------------
  * Start server
  * ----------------------------------------------------------------------- */
 httpd_handle_t web_ui_start(void) {
@@ -456,13 +530,14 @@ httpd_handle_t web_ui_start(void) {
     }
 
     static const httpd_uri_t uris[] = {
-        { .uri="/",           .method=HTTP_GET,  .handler=handle_root   },
-        { .uri="/api/state",  .method=HTTP_GET,  .handler=handle_state  },
-        { .uri="/api/load",   .method=HTTP_POST, .handler=handle_load   },
-        { .uri="/api/unload", .method=HTTP_POST, .handler=handle_unload },
-        { .uri="/api/sense",  .method=HTTP_POST, .handler=handle_sense  },
+        { .uri="/",                .method=HTTP_GET,  .handler=handle_root       },
+        { .uri="/api/state",       .method=HTTP_GET,  .handler=handle_state      },
+        { .uri="/api/load",        .method=HTTP_POST, .handler=handle_load       },
+        { .uri="/api/unload",      .method=HTTP_POST, .handler=handle_unload     },
+        { .uri="/api/sense",       .method=HTTP_POST, .handler=handle_sense      },
+        { .uri="/api/portaltype",  .method=HTTP_POST, .handler=handle_portaltype },
     };
-    for (int i = 0; i < 5; i++) httpd_register_uri_handler(server, &uris[i]);
+    for (int i = 0; i < 6; i++) httpd_register_uri_handler(server, &uris[i]);
 
     ESP_LOGI(TAG, "HTTP server started");
     return server;

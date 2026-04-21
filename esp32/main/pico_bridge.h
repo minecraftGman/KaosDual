@@ -18,6 +18,9 @@ void pico_bridge_load(uint8_t slot, const uint8_t *raw_dump_1024);
 /* Tell the Pico to unload a slot */
 void pico_bridge_unload(uint8_t slot);
 
+/* Tell the Pico to switch portal type (0=SSA/Giants, 1=SwapForce, 2=TrapTeam, 3=Imaginators) */
+void pico_bridge_set_portal_type(uint8_t type);
+
 /* Returns true if the Pico has sent MSG_PICO_READY since boot */
 bool pico_bridge_is_ready(void);
 
