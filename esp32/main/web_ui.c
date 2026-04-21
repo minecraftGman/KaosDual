@@ -277,15 +277,7 @@ static const char HTML_PAGE[] =
 "function dl(slot){window.location='/api/download?slot='+slot;}"
 
 /* upload */
-"async function delFile(f){"
-  "if(!f||!confirm('Delete '+f+'?'))return;"
-  "st('Deleting...',1);"
-  "try{"
-    "const j=await(await fetch('/api/delete',{method:'POST',"
-      "headers:{'Content-Type':'application/json'},body:JSON.stringify({file:f})})).json();"
-    "if(j.ok){st('Deleted',1);await go();}else st('Delete failed',0);"
-  "}catch(e){st('Error',0)}"
-"}"
+"async function uploadFile(inp){"
   "const f=inp.files[0];if(!f)return;"
   "const stat=document.getElementById('upstat');"
   "stat.textContent='Uploading '+f.name+'...';"
@@ -296,6 +288,16 @@ static const char HTML_PAGE[] =
     "else stat.textContent='✗ '+(j.error||'Upload failed');"
   "}catch(e){stat.textContent='✗ Error'}"
   "inp.value='';"
+"}"
+
+"async function delFile(f){"
+  "if(!f||!confirm('Delete '+f+'?'))return;"
+  "st('Deleting...',1);"
+  "try{"
+    "const j=await(await fetch('/api/delete',{method:'POST',"
+      "headers:{'Content-Type':'application/json'},body:JSON.stringify({file:f})})).json();"
+    "if(j.ok){st('Deleted',1);await go();}else st('Delete failed',0);"
+  "}catch(e){st('Error',0)}"
 "}"
 
 /* sense */
