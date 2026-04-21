@@ -34,7 +34,7 @@
 #include <string.h>
 
 #define KAOS_SOF            0xAB
-#define KAOS_BAUD           921600
+#define KAOS_BAUD           115200
 #define SKYLANDER_DUMP_SIZE 1024
 
 typedef enum {

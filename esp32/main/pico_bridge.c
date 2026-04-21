@@ -60,19 +60,21 @@ static void rx_task(void *arg) {
 
         switch (type) {
             case MSG_PICO_READY:
-                s_pico_ready = true;
-                ESP_LOGI(TAG, "Pico is ready — sending saved portal type");
-                /* Load saved portal type from NVS and send to Pico */
-                {
+                if (!s_pico_ready) {
+                    /* First ready after power-on — send saved portal type once */
+                    s_pico_ready = true;
+                    ESP_LOGI(TAG, "Pico ready — syncing portal type");
                     nvs_handle_t nvs;
-                    uint8_t saved_type = 3; /* default: Imaginators */
+                    uint8_t saved_type = 3;
                     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
                         uint8_t v = 3;
                         if (nvs_get_u8(nvs, NVS_KEY_PTYPE, &v) == ESP_OK) saved_type = v;
                         nvs_close(nvs);
                     }
-                    vTaskDelay(pdMS_TO_TICKS(300)); /* let Pico finish USB init */
+                    vTaskDelay(pdMS_TO_TICKS(300));
                     pico_bridge_set_portal_type(saved_type);
+                } else {
+                    ESP_LOGW(TAG, "Pico sent READY again — ignoring (already synced)");
                 }
                 break;
 
