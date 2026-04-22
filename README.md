@@ -94,7 +94,7 @@ idf.py -p /dev/ttyUSB0 flash    # Windows: COM3 etc.
 
 1. Power both boards (the Pico via USB to the console/PC, the ESP32 via its USB-C)
 2. LCD shows `KAOS-Portal` / `192.168.4.1`
-3. Connect your phone or PC to WiFi **`KAOS-Portal`** (open, no password)
+3. Connect your phone or PC to WiFi **`KAOS-Portal`** (password is skylands1)
 4. Open **http://192.168.4.1** in a browser
 5. Two cards appear — P1 and P2
 6. Select a file from the dropdown → **Load**
