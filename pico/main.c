@@ -220,9 +220,30 @@ static void process_hid_command(const uint8_t *in, uint8_t r[PORTAL_HID_REPORT_L
 
     switch (in[0]) {
         case CMD_RESET:
-            /* 'R' — first command from game, activates portal */
+            /* 'R' — first command from game, identifies portal type.
+             * Bytes 1+2 tell the game what portal this is.
+             * Trap Team rejects anything that isn't 0x02 0x18.
+             *
+             * Known IDs:
+             *   0x01 0x3D = SSA / Giants / Swap Force
+             *   0x02 0x18 = Traptanium (Trap Team)
+             *   0x02 0x0A = SuperChargers / Imaginators
+             */
             g_portal_active = true;
             r[0] = 'R';
+            switch (g_portal_type) {
+                case 2:  /* Trap Team */
+                    r[1] = 0x02; r[2] = 0x18;
+                    break;
+                case 3:  /* Imaginators / SuperChargers */
+                    r[1] = 0x02; r[2] = 0x0A;
+                    break;
+                case 0:  /* SSA / Giants */
+                case 1:  /* Swap Force */
+                default:
+                    r[1] = 0x01; r[2] = 0x3D;
+                    break;
+            }
             break;
 
         case CMD_ACTIVATE:
