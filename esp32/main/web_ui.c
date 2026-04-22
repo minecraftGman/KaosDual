@@ -19,6 +19,8 @@
 #include "pico_bridge.h"
 #include "esp_log.h"
 #include "esp_http_server.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -44,6 +46,18 @@ typedef enum {
 } portal_type_t;
 
 static portal_type_t g_portal_type = PORTAL_TYPE_IMAGINATORS;
+
+/* Load saved portal type from NVS — called once at server start */
+void web_ui_load_portal_type(void) {
+    nvs_handle_t nvs;
+    if (nvs_open("kaos", NVS_READONLY, &nvs) == ESP_OK) {
+        uint8_t v = 3;
+        if (nvs_get_u8(nvs, "portal_type", &v) == ESP_OK && v <= 3)
+            g_portal_type = (portal_type_t)v;
+        nvs_close(nvs);
+    }
+    ESP_LOGI("WebUI", "Portal type loaded from NVS: %d", (int)g_portal_type);
+}
 
 /* -----------------------------------------------------------------------
  * HTML page
@@ -207,14 +221,19 @@ static const char HTML_PAGE[] =
   "'Life':'🌿','Undead':'💀','Magic':'✨','Tech':'⚙️','Light':'☀️','Dark':'🌑'};"
 "const TN={0:\"Spyro's Adv\",1:'Swap Force',2:'Trap Team',3:'Imaginators'};"
 "let S={files:[],slots:[{loaded:false},{loaded:false}],portal_type:3};"
+"let _ptypeUserSet=false;"
 
 /* fetchState */
 "async function go(){"
   "try{"
     "S=await(await fetch('/api/state')).json();"
     "render();st('Connected',1);"
-    "document.getElementById('ptype').value=S.portal_type||3;"
-    "document.getElementById('pbadge').textContent=TN[S.portal_type||3];"
+    /* Only update dropdown if user hasn't just changed it */
+    "if(!_ptypeUserSet){"
+      "document.getElementById('ptype').value=S.portal_type||3;"
+      "document.getElementById('pbadge').textContent=TN[S.portal_type||3];"
+    "}"
+    "_ptypeUserSet=false;"
   "}catch(e){st('No connection',0)}"
 "}"
 
@@ -307,6 +326,7 @@ static const char HTML_PAGE[] =
 
 /* portal type */
 "async function setPortalType(v){"
+  "_ptypeUserSet=true;"
   "document.getElementById('pbadge').textContent=TN[parseInt(v)];"
   "await fetch('/api/portaltype',{method:'POST',"
     "headers:{'Content-Type':'application/json'},body:JSON.stringify({type:parseInt(v)})});"

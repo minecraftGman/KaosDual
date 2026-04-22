@@ -227,6 +227,7 @@ void app_main(void) {
     wifi_ap_init();
 
     /* Web UI */
+    web_ui_load_portal_type();
     web_ui_start();
 
     /* LCD: show AP name + password */
