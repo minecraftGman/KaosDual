@@ -28,7 +28,7 @@ Wii / PS3 / Xbox 360 / Dolphin / RPCS3
          Pi Pico
             ↕  UART  (3 wires, 921600 baud)
          ESP32 DevKit v1
-            ├── SD card  (.bin / .sky Skylander dumps)
+            ├── Spiffs (.bin / .sky Skylander dumps)
             └── LCD1602  (shows WiFi AP name + IP)
 
 Your phone or browser
