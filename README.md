@@ -1,5 +1,11 @@
 # KAOS — Dual-Board Portal (Pi Pico + ESP32)
 
+Bassed off: https://github.com/NicoAICP/KAOS
+
+
+I got this slopped together with the help of Claude.
+
+
 Each chip does what it's best at:
 
 | Board | Job |
@@ -41,15 +47,6 @@ Your phone or browser
 | GND    | GND  | Ground  |
 
 Both boards run at 3.3V — no level shifting needed.
-
-### SD Card → ESP32 (HSPI)
-
-| Signal | ESP32 GPIO |
-|--------|------------|
-| MOSI   | 13 |
-| MISO   | 12 |
-| CLK    | 14 |
-| CS     | 15 |
 
 ### LCD1602 → ESP32 (I2C, PCF8574 backpack)
 
