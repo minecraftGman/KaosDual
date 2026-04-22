@@ -1,3 +1,4 @@
+<img width="1920" height="1080" alt="KaosDualDiagram" src="https://github.com/user-attachments/assets/3083ad40-4919-4aa9-a266-54dcbb42415d" />
 
 
 https://github.com/user-attachments/assets/ed9b0758-c3e0-4da7-b5a5-80fc55a9bd7d
