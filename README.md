@@ -61,16 +61,6 @@ Both boards run at 3.3V — no level shifting needed.
 
 Default I2C address: **0x27** (try **0x3F** if blank — change `LCD_I2C_ADDR` in `esp32/main/main.c`).
 
----
-
-## SD Card
-
-Format as **FAT32**. Place Skylander dumps in the root directory.
-
-Supported formats: `.bin` `.dmp` `.dump` `.sky`
-
----
-
 ## Building — Pi Pico
 
 Requires the [Pico SDK](https://github.com/raspberrypi/pico-sdk).
