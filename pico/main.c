@@ -1,16 +1,20 @@
 /*
- * KAOS Pico — main.c
+ * KAOS Pico — main.c  (clean rewrite)
  *
- * Core 0: TinyUSB task + HID processing
+ * Protocol based on confirmed-working RPCS3/Dolphin implementation.
+ *
+ * Key facts:
+ *   - Commands arrive via HID SET_REPORT (control EP0) on PS3
+ *   - Responses go via interrupt IN endpoint (0x81)
+ *   - Status packet: 'S' [b0][b1][b2][b3] [seq] [active] 0x00...
+ *     - 4 status bytes = 32-bit array, 2 bits per slot (up to 16 slots)
+ *     - bits [2i+1:2i]: 00=absent, 01=present, 11=arrived, 10=removed
+ *   - R response identifies portal type to the game
+ *   - A response: 0x41, activation_byte, 0xFF, 0x77
+ *   - Query/Write use index 0x10 for slot 0, 0x11 for slot 1, etc.
+ *
+ * Core 0: TinyUSB + HID + response queue drain
  * Core 1: UART RX from ESP32
- *
- * Portal type is set by ESP32 via MSG_SET_PORTAL_TYPE and stored in a
- * simple global — takes effect after next power cycle of the Pico since
- * USB descriptors are fixed at enumeration time.
- *
- * Wiring:
- *   Pico GPIO4 (UART1 TX) ──→ ESP32 GPIO16 (RX2)
- *   Pico GPIO5 (UART1 RX) ←── ESP32 GPIO17 (TX2)
  */
 
 #include <stdio.h>
@@ -19,7 +23,8 @@
 #include "pico/multicore.h"
 #include "pico/sync.h"
 #include "hardware/uart.h"
-#include "hardware/flash.h"
+#include "hardware/watchdog.h"
+#include "hardware/structs/watchdog.h"
 #include "tusb.h"
 
 #include "skylander_slots.h"
@@ -29,385 +34,456 @@
 /* -----------------------------------------------------------------------
  * UART config
  * ----------------------------------------------------------------------- */
-#define KAOS_UART       uart1
-#define KAOS_UART_TX    4
-#define KAOS_UART_RX    5
+#define KAOS_UART    uart1
+#define KAOS_UART_TX 4
+#define KAOS_UART_RX 5
 
 /* -----------------------------------------------------------------------
- * Portal type — set by ESP32, read by usb_descriptors.c at init time.
- * Stored in the last page of flash so it survives power cycles.
- *
- * We use a simple 256-byte flash page at the very end of flash.
- * Layout: [0] = magic 0xAB, [1] = portal type (0-3)
+ * Portal type — stored in watchdog scratch across reboots
+ * scratch[4] = magic, scratch[5] = type
  * ----------------------------------------------------------------------- */
-#define FLASH_PORTAL_TYPE_OFFSET  (PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE)
-#define FLASH_PORTAL_TYPE_MAGIC   0xAB
+#define PORTAL_TYPE_MAGIC 0xCA05CA05u
 
-static uint8_t g_portal_type = 3; /* default: Imaginators */
-
-static void load_portal_type_from_flash(void) {
-    const uint8_t *p = (const uint8_t *)(XIP_BASE + FLASH_PORTAL_TYPE_OFFSET);
-    if (p[0] == FLASH_PORTAL_TYPE_MAGIC && p[1] <= 3) {
-        g_portal_type = p[1];
+static uint8_t load_portal_type(void) {
+    if (watchdog_hw->scratch[4] == PORTAL_TYPE_MAGIC) {
+        uint8_t t = (uint8_t)watchdog_hw->scratch[5];
+        if (t <= 3) return t;
     }
+    return 3; /* default: Imaginators */
 }
 
-static void save_portal_type_to_flash(uint8_t type) {
-    /* Read the sector first, modify our 2 bytes, erase, write back */
-    static uint8_t sector_buf[FLASH_SECTOR_SIZE];
-    const uint8_t *flash_ptr = (const uint8_t *)(XIP_BASE + FLASH_PORTAL_TYPE_OFFSET);
-    memcpy(sector_buf, flash_ptr, FLASH_SECTOR_SIZE);
-    sector_buf[0] = FLASH_PORTAL_TYPE_MAGIC;
-    sector_buf[1] = type;
-
-    uint32_t ints = save_and_disable_interrupts();
-    flash_range_erase(FLASH_PORTAL_TYPE_OFFSET, FLASH_SECTOR_SIZE);
-    flash_range_program(FLASH_PORTAL_TYPE_OFFSET, sector_buf, FLASH_SECTOR_SIZE);
-    restore_interrupts(ints);
+static void save_and_reboot(uint8_t type) {
+    watchdog_hw->scratch[4] = PORTAL_TYPE_MAGIC;
+    watchdog_hw->scratch[5] = type;
+    watchdog_reboot(0, 0, 10);
+    while (1) tight_loop_contents();
 }
 
+volatile uint8_t g_portal_type = 3;
 uint8_t portal_get_type(void) { return g_portal_type; }
 
 /* -----------------------------------------------------------------------
- * Portal HID commands (from game/console)
+ * Response queue — core 0 drains this into USB IN reports
  * ----------------------------------------------------------------------- */
-#define CMD_ACTIVATE    'A'
-#define CMD_READY_QUERY 'Q'
-#define CMD_STATUS      'S'
-#define CMD_RESET       'R'
-#define CMD_MUSIC       'M'
-#define CMD_LIGHT       'L'
-#define CMD_J           'J'   /* Trap Team fade light — respond with 'J' */
-#define CMD_TAG_READ    'b'
-#define CMD_TAG_WRITE   'w'
-#define RESP_STATUS     'S'
-#define RESP_TAG_READ   'b'
-#define RESP_TAG_WRITE  'w'
+#define RESP_QUEUE_LEN 16
+#define REPORT_LEN     32
 
-static bool g_portal_active = false;
+static uint8_t  q_buf[RESP_QUEUE_LEN][REPORT_LEN];
+static uint8_t  q_head = 0, q_tail = 0;
+static spin_lock_t *q_lock;
+
+static bool q_push(const uint8_t *data) {
+    uint32_t save = spin_lock_blocking(q_lock);
+    uint8_t next = (q_tail + 1) % RESP_QUEUE_LEN;
+    bool ok = (next != q_head);
+    if (ok) { memcpy(q_buf[q_tail], data, REPORT_LEN); q_tail = next; }
+    spin_unlock(q_lock, save);
+    return ok;
+}
+
+static bool q_pop(uint8_t *out) {
+    uint32_t save = spin_lock_blocking(q_lock);
+    bool ok = (q_head != q_tail);
+    if (ok) { memcpy(out, q_buf[q_head], REPORT_LEN); q_head = (q_head + 1) % RESP_QUEUE_LEN; }
+    spin_unlock(q_lock, save);
+    return ok;
+}
+
+static bool q_empty(void) {
+    uint32_t save = spin_lock_blocking(q_lock);
+    bool e = (q_head == q_tail);
+    spin_unlock(q_lock, save);
+    return e;
+}
+
+/* -----------------------------------------------------------------------
+ * Slot spinlock (core 0 reads, core 1 writes)
+ * ----------------------------------------------------------------------- */
 static spin_lock_t *s_slot_lock;
-
-/* -----------------------------------------------------------------------
- * UART send
- * ----------------------------------------------------------------------- */
-static void uart_send_frame(kaos_msg_t type, const uint8_t *payload, uint16_t len) {
-    static uint8_t frame_buf[SKYLANDER_DUMP_SIZE + 8];
-    static const uint8_t empty[1] = {0};
-    int n = kaos_build_frame(frame_buf, type,
-                             (payload && len) ? payload : empty, len);
-    uart_write_blocking(KAOS_UART, frame_buf, n);
-}
-
-/* -----------------------------------------------------------------------
- * UART RX — core 1
- * ----------------------------------------------------------------------- */
-static void core1_uart_rx(void) {
-    kaos_parser_t parser;
-    kaos_parser_init(&parser);
-
-    kaos_msg_t  type;
-    uint8_t    *payload;
-    uint16_t    len;
-
-    while (true) {
-        if (!uart_is_readable(KAOS_UART)) {
-            tight_loop_contents();
-            continue;
-        }
-        uint8_t b = uart_getc(KAOS_UART);
-        if (!kaos_parser_feed(&parser, b, &type, &payload, &len)) continue;
-
-        switch (type) {
-            case MSG_LOAD:
-                if (len >= 1 + SKYLANDER_DUMP_SIZE) {
-                    uint32_t s = spin_lock_blocking(s_slot_lock);
-                    slots_load(payload[0], payload + 1);
-                    spin_unlock(s_slot_lock, s);
-                }
-                break;
-
-            case MSG_UNLOAD: {
-                if (len >= 1) {
-                    uint32_t s = spin_lock_blocking(s_slot_lock);
-                    slots_unload(payload[0]);
-                    spin_unlock(s_slot_lock, s);
-                }
-                break;
-            }
-
-            case MSG_SET_PORTAL_TYPE:
-                /* Save to flash — takes effect on next power cycle */
-                if (len >= 1 && payload[0] <= 3 && payload[0] != g_portal_type) {
-                    save_portal_type_to_flash(payload[0]);
-                    gpio_put(PICO_DEFAULT_LED_PIN, 1);
-                    sleep_ms(300);
-                    gpio_put(PICO_DEFAULT_LED_PIN, 0);
-                }
-                break;
-
-            default:
-                break;
-        }
-    }
-}
 
 /* -----------------------------------------------------------------------
  * Status report
  *
- * Format: S [stat0][stat1][stat2][stat3] [seq] [active] 0x00...
+ * Format (32 bytes):
+ *   [0]  'S' (0x53)
+ *   [1]  status bits 7-0
+ *   [2]  status bits 15-8
+ *   [3]  status bits 23-16
+ *   [4]  status bits 31-24
+ *   [5]  sequence counter (auto-increment)
+ *   [6]  portal active flag (0x01 = active)
+ *   [7..31] 0x00
  *
- * 4 status bytes = 32-bit little-endian bitfield.
- * Each slot uses 2 bits: 00=empty 01=present 11=arrived 10=removed
+ * 2 bits per slot:
+ *   00 = not present
+ *   01 = present
+ *   11 = just arrived (one-shot)
+ *   10 = just removed (one-shot)
  * ----------------------------------------------------------------------- */
-static uint8_t g_status_seq = 0;
-static bool    g_slot_was_loaded[MAX_SLOTS] = {false};
-static bool    g_arrival_pending[MAX_SLOTS] = {false};
-static bool    g_removal_pending[MAX_SLOTS] = {false};
+static uint8_t  g_status_seq = 0;
+static bool     g_was_loaded[MAX_SLOTS]       = {false};
+static bool     g_arrival_pending[MAX_SLOTS]  = {false};
+static bool     g_removal_pending[MAX_SLOTS]  = {false};
+static bool     g_portal_active               = false;
 
-static void build_status_report(uint8_t r[PORTAL_HID_REPORT_LEN]) {
-    memset(r, 0, PORTAL_HID_REPORT_LEN);
-    r[0] = RESP_STATUS;
+static void build_status(uint8_t out[REPORT_LEN]) {
+    memset(out, 0, REPORT_LEN);
+    out[0] = 'S';
 
-    uint32_t s = spin_lock_blocking(s_slot_lock);
-
+    uint32_t save = spin_lock_blocking(s_slot_lock);
     uint32_t bits = 0;
-    for (int i = 0; i < MAX_SLOTS && i < 16; i++) {
+
+    for (int i = 0; i < MAX_SLOTS; i++) {
         bool loaded = g_slots[i].loaded && g_slots[i].active;
 
-        if (loaded && !g_slot_was_loaded[i]) {
-            g_arrival_pending[i] = true;
-            g_removal_pending[i] = false;
-        } else if (!loaded && g_slot_was_loaded[i]) {
-            g_removal_pending[i] = true;
-            g_arrival_pending[i] = false;
-        }
-        g_slot_was_loaded[i] = loaded;
+        /* Detect transitions */
+        if (loaded && !g_was_loaded[i])  g_arrival_pending[i] = true;
+        if (!loaded && g_was_loaded[i])  g_removal_pending[i] = true;
+        g_was_loaded[i] = loaded;
 
         uint32_t slot_bits = 0;
         if (g_arrival_pending[i]) {
-            slot_bits = 0x3; /* arrived */
+            slot_bits = 0x3;            /* 11 = arrived */
             g_arrival_pending[i] = false;
         } else if (g_removal_pending[i]) {
-            slot_bits = 0x2; /* removed */
+            slot_bits = 0x2;            /* 10 = removed */
             g_removal_pending[i] = false;
         } else if (loaded) {
-            slot_bits = 0x1; /* present */
+            slot_bits = 0x1;            /* 01 = present */
         }
+
         bits |= (slot_bits << (i * 2));
     }
+    spin_unlock(s_slot_lock, save);
 
-    spin_unlock(s_slot_lock, s);
-
-    r[1] = (bits >>  0) & 0xFF;
-    r[2] = (bits >>  8) & 0xFF;
-    r[3] = (bits >> 16) & 0xFF;
-    r[4] = (bits >> 24) & 0xFF;
-    r[5] = g_status_seq++;
-    r[6] = g_portal_active ? 0x01 : 0x00;
+    out[1] = (bits >>  0) & 0xFF;
+    out[2] = (bits >>  8) & 0xFF;
+    out[3] = (bits >> 16) & 0xFF;
+    out[4] = (bits >> 24) & 0xFF;
+    out[5] = g_status_seq++;
+    out[6] = g_portal_active ? 0x01 : 0x00;
 }
 
 /* -----------------------------------------------------------------------
- * HID response buffer (written by tud_hid_set_report_cb, read by main loop)
+ * Debug helper — sends a short string back to ESP32 via UART
  * ----------------------------------------------------------------------- */
-static uint8_t g_hid_response[PORTAL_HID_REPORT_LEN];
-static bool    g_response_ready = false;
+static void pico_debug(const char *msg) {
+    uint16_t len = (uint16_t)strlen(msg);
+    if (len > 40) len = 40;
+    static uint8_t frame[56];
+    int n = kaos_build_frame(frame, MSG_DEBUG, (const uint8_t*)msg, len);
+    uart_write_blocking(KAOS_UART, frame, n);
+}
 
 /* -----------------------------------------------------------------------
- * HID command processing
+ * Handle incoming HID command (from SET_REPORT or interrupt OUT)
+ * Builds a response and pushes it to the queue, or returns false
+ * if no response needed.
  * ----------------------------------------------------------------------- */
-static void process_hid_command(const uint8_t *in, uint8_t r[PORTAL_HID_REPORT_LEN]) {
-    memset(r, 0, PORTAL_HID_REPORT_LEN);
+static void handle_command(const uint8_t *cmd) {
+    uint8_t resp[REPORT_LEN];
+    memset(resp, 0, REPORT_LEN);
+    bool has_resp = true;
 
-    switch (in[0]) {
-        case CMD_RESET:
-            /* 'R' — first command from game, identifies portal type.
-             * Bytes 1+2 tell the game what portal this is.
-             * Trap Team rejects anything that isn't 0x02 0x18.
-             *
-             * Known IDs:
-             *   0x01 0x3D = SSA / Giants / Swap Force
-             *   0x02 0x18 = Traptanium (Trap Team)
-             *   0x02 0x0A = SuperChargers / Imaginators
-             */
-            g_portal_active = true;
-            r[0] = 'R';
-            switch (g_portal_type) {
-                case 2:  /* Trap Team */
-                    r[1] = 0x02; r[2] = 0x18;
-                    break;
-                case 3:  /* Imaginators / SuperChargers */
-                    r[1] = 0x02; r[2] = 0x0A;
-                    break;
-                case 0:  /* SSA / Giants */
-                case 1:  /* Swap Force */
-                default:
-                    r[1] = 0x01; r[2] = 0x3D;
-                    break;
+    /* Debug: log commands received from the game */
+    if (cmd[0]=='R' || cmd[0]=='A' || cmd[0]=='Q' || cmd[0]=='S') {
+        char d[6] = "CMD:X";
+        d[4] = cmd[0]; d[5] = '\0';
+        pico_debug(d);
+    }
+
+    switch (cmd[0]) {
+
+    case 'R':
+        /* Ready — identifies portal type to game.
+         * Trap Team checks bytes 1+2 and rejects non-Traptanium portals. */
+        g_portal_active = true;
+        resp[0] = 'R';
+        switch (g_portal_type) {
+            case 2:  resp[1]=0x02; resp[2]=0x18; break; /* Trap Team   */
+            case 3:  resp[1]=0x02; resp[2]=0x0A; break; /* Imaginators */
+            case 0:
+            case 1:
+            default: resp[1]=0x01; resp[2]=0x3D; break; /* SSA/Giants  */
+        }
+        break;
+
+    case 'A':
+        /* Activate / deactivate */
+        g_portal_active = (cmd[1] == 0x01);
+        resp[0] = 0x41;      /* 'A' */
+        resp[1] = cmd[1];
+        resp[2] = 0xFF;
+        resp[3] = 0x77;
+        break;
+
+    case 'S':
+        /* Explicit status request */
+        build_status(resp);
+        break;
+
+    case 'Q':
+        /* Query (read block)
+         * Command:  Q [0x10+slot] [block]
+         * Response: Q [0x10+slot] [block] [16 bytes data]   (success)
+         *           Q [0x01]      [block]                   (error)
+         */
+        {
+            uint8_t raw_idx = cmd[1];
+            uint8_t slot    = (raw_idx >= 0x10) ? (raw_idx - 0x10) : raw_idx;
+            uint8_t blk     = cmd[2];
+            resp[0] = 'Q';
+            resp[2] = blk;
+            uint32_t save = spin_lock_blocking(s_slot_lock);
+            uint8_t *bd   = slots_get_block(slot, blk);
+            if (bd) {
+                resp[1] = 0x10 + slot;   /* success: echo index */
+                memcpy(&resp[3], bd, 16);
+            } else {
+                resp[1] = 0x01;          /* error */
+            }
+            spin_unlock(s_slot_lock, save);
+        }
+        break;
+
+    case 'W':
+        /* Write block */
+        {
+            uint8_t raw_idx = cmd[1];
+            uint8_t slot    = (raw_idx >= 0x10) ? (raw_idx - 0x10) : raw_idx;
+            uint8_t blk     = cmd[2];
+            resp[0] = 'W';
+            resp[1] = 0x00;   /* always 0 in write response */
+            resp[2] = blk;    /* echo block number */
+
+            uint32_t save = spin_lock_blocking(s_slot_lock);
+            slots_write_block(slot, blk, &cmd[3]);
+            /* Trigger write-back on every write — the ESP32 will save the
+             * updated encrypted dump to SPIFFS each time */
+            static uint8_t wb_buf[1 + SKYLANDER_DUMP_SIZE];
+            wb_buf[0] = slot;
+            memcpy(wb_buf + 1, g_slots[slot].data, SKYLANDER_DUMP_SIZE);
+            spin_unlock(s_slot_lock, save);
+
+            /* Send write-back to ESP32 */
+            static uint8_t frame[SKYLANDER_DUMP_SIZE + 8];
+            int n = kaos_build_frame(frame, MSG_WRITE_BACK, wb_buf, 1 + SKYLANDER_DUMP_SIZE);
+            uart_write_blocking(KAOS_UART, frame, n);
+        }
+        break;
+
+    case 'J': /* Trap Team fade light — echo cmd char + side byte */
+        resp[0] = 'J';
+        resp[1] = cmd[1];
+        break;
+
+    case 'C': /* Color — no LED, no response needed */
+    case 'L': /* Light — no response needed */
+    case 'M': /* Music — no response needed */
+    case 'V': /* Unknown, seen on startup — ignore */
+        has_resp = false;
+        break;
+
+    default:
+        has_resp = false;
+        break;
+    }
+
+    if (has_resp) q_push(resp);
+}
+
+/* -----------------------------------------------------------------------
+ * TinyUSB HID callbacks
+ * ----------------------------------------------------------------------- */
+
+/* SET_REPORT (control) — PS3 sends commands this way */
+void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
+                            hid_report_type_t report_type,
+                            uint8_t const *buf, uint16_t bufsize) {
+    (void)instance; (void)report_id; (void)report_type;
+    if (bufsize >= 1) handle_command(buf);
+}
+
+/* GET_REPORT — return current status */
+uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id,
+                                hid_report_type_t report_type,
+                                uint8_t *buf, uint16_t reqlen) {
+    (void)instance; (void)report_id; (void)report_type;
+    uint8_t resp[REPORT_LEN];
+    if (!q_pop(resp)) build_status(resp);
+    uint16_t n = (reqlen < REPORT_LEN) ? reqlen : REPORT_LEN;
+    memcpy(buf, resp, n);
+    return n;
+}
+
+/* -----------------------------------------------------------------------
+ * UART send helper
+ * ----------------------------------------------------------------------- */
+static void uart_send(kaos_msg_t type, const uint8_t *payload, uint16_t len) {
+    static uint8_t frame[SKYLANDER_DUMP_SIZE + 8];
+    static const uint8_t empty[1] = {0};
+    int n = kaos_build_frame(frame, type,
+                             (payload && len) ? payload : empty, len);
+    uart_write_blocking(KAOS_UART, frame, n);
+}
+
+/* -----------------------------------------------------------------------
+ * Core 1 — UART RX from ESP32
+ * ----------------------------------------------------------------------- */
+static volatile bool     g_type_pending   = false;
+static volatile uint8_t  g_pending_type   = 3;
+
+static void core1_uart_rx(void) {
+    kaos_parser_t parser;
+    kaos_parser_init(&parser);
+    kaos_msg_t type;
+    uint8_t   *payload;
+    uint16_t   len;
+
+    while (true) {
+        if (!uart_is_readable(KAOS_UART)) { tight_loop_contents(); continue; }
+        uint8_t b = uart_getc(KAOS_UART);
+        if (!kaos_parser_feed(&parser, b, &type, &payload, &len)) continue;
+
+        switch (type) {
+        case MSG_LOAD:
+            if (len >= 1 + SKYLANDER_DUMP_SIZE) {
+                uint8_t slot = payload[0];
+                uint32_t save = spin_lock_blocking(s_slot_lock);
+                slots_load(slot, payload + 1);
+                spin_unlock(s_slot_lock, save);
+
+                /* Debug: confirm load received */
+                char dbg[24];
+                dbg[0]='L'; dbg[1]='D'; dbg[2]='='; dbg[3]='0'+slot;
+                dbg[4]=','; dbg[5]='U'; dbg[6]='I'; dbg[7]='D';
+                dbg[8]=':';
+                /* show first byte of UID */
+                uint8_t u = payload[1]; /* block 0 byte 0 = UID[0] */
+                dbg[9]  = "0123456789ABCDEF"[u>>4];
+                dbg[10] = "0123456789ABCDEF"[u&0xF];
+                dbg[11] = '\0';
+                pico_debug(dbg);
+
+                /* Push arrival status packets directly into the queue */
+                uint32_t arrival_bits = 0x3u << (slot * 2);
+                uint32_t present_bits = 0x1u << (slot * 2);
+                uint8_t pkt[REPORT_LEN];
+
+                for (int i = 0; i < 3; i++) {
+                    memset(pkt, 0, REPORT_LEN);
+                    pkt[0] = 'S';
+                    pkt[1] = (arrival_bits >> 0) & 0xFF;
+                    pkt[2] = (arrival_bits >> 8) & 0xFF;
+                    pkt[3] = (arrival_bits >> 16) & 0xFF;
+                    pkt[4] = (arrival_bits >> 24) & 0xFF;
+                    pkt[5] = 0;
+                    pkt[6] = 0x01;
+                    q_push(pkt);
+                }
+                for (int i = 0; i < 2; i++) {
+                    memset(pkt, 0, REPORT_LEN);
+                    pkt[0] = 'S';
+                    pkt[1] = (present_bits >> 0) & 0xFF;
+                    pkt[2] = (present_bits >> 8) & 0xFF;
+                    pkt[3] = (present_bits >> 16) & 0xFF;
+                    pkt[4] = (present_bits >> 24) & 0xFF;
+                    pkt[5] = 0;
+                    pkt[6] = 0x01;
+                    q_push(pkt);
+                }
+            } else {
+                pico_debug("LOAD:BAD_LEN");
             }
             break;
 
-        case CMD_ACTIVATE:
-            /* 'A' — 0x01 = activate, 0x00 = deactivate */
-            g_portal_active = (in[1] == 0x01);
-            r[0] = 'A'; r[1] = in[1]; r[2] = 0xFF; r[3] = 0x77;
-            break;
-
-        case CMD_READY_QUERY:
-            r[0] = 'A'; r[1] = 0x00; r[2] = 0xFF; r[3] = 0x77;
-            break;
-
-        case CMD_STATUS:
-            build_status_report(r);
-            break;
-
-        case CMD_J:
-            /* Trap Team fade light — just echo back the command */
-            r[0] = 'J'; r[1] = in[1];
-            break;
-
-        case CMD_MUSIC:
-        case CMD_LIGHT:
-        case 'C': /* Color command */
-            /* No LEDs — silently ignore */
-            break;
-
-        case CMD_TAG_READ: {
-            /* Game sends index 0x10 for slot 0, 0x11 for slot 1 */
-            uint8_t idx  = in[1];
-            uint8_t slot = (idx >= 0x10) ? (idx - 0x10) : idx;
-            uint8_t blk  = in[2];
-            r[0] = RESP_TAG_READ;
-            r[1] = in[1];
-            r[2] = in[2];
-            uint32_t sv = spin_lock_blocking(s_slot_lock);
-            uint8_t *bd = slots_get_block(slot, blk);
-            if (bd) { r[3] = 0x00; memcpy(&r[4], bd, 16); }
-            else      r[3] = 0xFF;
-            spin_unlock(s_slot_lock, sv);
-            break;
-        }
-
-        case CMD_TAG_WRITE: {
-            uint8_t idx  = in[1];
-            uint8_t slot = (idx >= 0x10) ? (idx - 0x10) : idx;
-            uint8_t blk  = in[2];
-            r[0] = RESP_TAG_WRITE;
-            r[1] = in[1];
-            r[2] = in[2];
-            r[3] = 0x00;
-
-            uint32_t sv = spin_lock_blocking(s_slot_lock);
-            slots_write_block(slot, blk, &in[3]);
-            bool should_wb = (blk == 8) && (slot < MAX_SLOTS) && g_slots[slot].dirty;
-            static uint8_t wb_payload[1 + SKYLANDER_DUMP_SIZE];
-            if (should_wb) {
-                wb_payload[0] = slot;
-                memcpy(wb_payload + 1, g_slots[slot].data, SKYLANDER_DUMP_SIZE);
-                g_slots[slot].dirty = false;
+        case MSG_UNLOAD:
+            if (len >= 1) {
+                uint32_t save = spin_lock_blocking(s_slot_lock);
+                slots_unload(payload[0]);
+                spin_unlock(s_slot_lock, save);
             }
-            spin_unlock(s_slot_lock, sv);
-
-            if (should_wb)
-                uart_send_frame(MSG_WRITE_BACK, wb_payload, 1 + SKYLANDER_DUMP_SIZE);
             break;
-        }
+
+        case MSG_SET_PORTAL_TYPE:
+            if (len >= 1 && payload[0] != g_portal_type && payload[0] <= 3) {
+                g_pending_type = payload[0];
+                g_type_pending = true;
+            }
+            break;
 
         default:
             break;
+        }
     }
-}
-
-/* -----------------------------------------------------------------------
- * TinyUSB callbacks
- * ----------------------------------------------------------------------- */
-
-/* Commands arrive via HID SET_REPORT (PS3 wireless portal protocol) */
-void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
-                            hid_report_type_t report_type,
-                            uint8_t const *buffer, uint16_t bufsize) {
-    (void)instance; (void)report_id; (void)report_type;
-    if (bufsize < 1) return;
-
-    /* Strip leading zero report-ID byte if present */
-    const uint8_t *cmd = buffer;
-    if (buffer[0] == 0x00 && bufsize > 1) { cmd = buffer + 1; }
-
-    process_hid_command(cmd, g_hid_response);
-    g_response_ready = true;
-}
-
-/* IN endpoint callback — game polling for data */
-uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id,
-                                hid_report_type_t report_type,
-                                uint8_t *buffer, uint16_t reqlen) {
-    (void)instance; (void)report_id; (void)report_type;
-    uint16_t len = (reqlen < PORTAL_HID_REPORT_LEN) ? reqlen : PORTAL_HID_REPORT_LEN;
-    if (g_response_ready) {
-        memcpy(buffer, g_hid_response, len);
-        g_response_ready = false;
-    } else {
-        build_status_report(buffer);
-    }
-    return len;
 }
 
 /* -----------------------------------------------------------------------
  * main
  * ----------------------------------------------------------------------- */
 int main(void) {
-    int lock_num = spin_lock_claim_unused(true);
-    s_slot_lock  = spin_lock_instance(lock_num);
+    /* Claim spinlocks */
+    q_lock      = spin_lock_instance(spin_lock_claim_unused(true));
+    s_slot_lock = spin_lock_instance(spin_lock_claim_unused(true));
 
+    /* LED */
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     gpio_put(PICO_DEFAULT_LED_PIN, 0);
 
-    /* Load portal type from flash (saved by previous MSG_SET_PORTAL_TYPE) */
-    load_portal_type_from_flash();
+    /* Load portal type from watchdog scratch */
+    g_portal_type = load_portal_type();
 
-    /* UART to ESP32 */
+    /* UART1 for ESP32 comms */
     uart_init(KAOS_UART, KAOS_BAUD);
     gpio_set_function(KAOS_UART_TX, GPIO_FUNC_UART);
     gpio_set_function(KAOS_UART_RX, GPIO_FUNC_UART);
     uart_set_hw_flow(KAOS_UART, false, false);
     uart_set_format(KAOS_UART, 8, 1, UART_PARITY_NONE);
 
-    /* TinyUSB — portal type already set, descriptor will use it */
+    /* USB */
     tusb_init();
 
-    /* Blink LED to show ready */
-    for (int i = 0; i < 3; i++) {
-        gpio_put(PICO_DEFAULT_LED_PIN, 1); sleep_ms(80);
-        gpio_put(PICO_DEFAULT_LED_PIN, 0); sleep_ms(80);
-    }
+    /* Tell ESP32 we're ready */
+    sleep_ms(300);
+    uart_send(MSG_PICO_READY, NULL, 0);
 
-    /* Tell ESP32 we're up */
-    sleep_ms(200);
-    uart_send_frame(MSG_PICO_READY, NULL, 0);
-
-    /* Core 1: UART RX */
+    /* Start core 1 UART RX */
     multicore_launch_core1(core1_uart_rx);
 
-    /* Core 0: USB HID main loop */
+    /* Core 0 main loop */
     uint32_t last_status_ms = 0;
+
     while (true) {
         tud_task();
 
-        /* Send queued HID response */
-        if (tud_hid_ready() && g_response_ready) {
-            tud_hid_report(0, g_hid_response, PORTAL_HID_REPORT_LEN);
-            g_response_ready = false;
-            last_status_ms = to_ms_since_boot(get_absolute_time());
+        /* Portal type change — save and reboot */
+        if (g_type_pending) {
+            g_type_pending = false;
+            gpio_put(PICO_DEFAULT_LED_PIN, 1);
+            sleep_ms(50);
+            save_and_reboot(g_pending_type);
         }
 
-        /* Periodic status heartbeat — keeps game from timing out */
-        if (g_portal_active && tud_hid_ready()) {
-            uint32_t now = to_ms_since_boot(get_absolute_time());
-            if (now - last_status_ms >= 100) {
-                uint8_t status[PORTAL_HID_REPORT_LEN];
-                build_status_report(status);
-                tud_hid_report(0, status, PORTAL_HID_REPORT_LEN);
-                last_status_ms = now;
+        /* Drain response queue → USB IN */
+        if (tud_hid_ready()) {
+            uint8_t resp[REPORT_LEN];
+            bool sent = false;
+
+            if (q_pop(resp)) {
+                tud_hid_report(0, resp, REPORT_LEN);
+                last_status_ms = to_ms_since_boot(get_absolute_time());
+                sent = true;
+            }
+
+            /* Send periodic status when portal is active and queue is empty */
+            if (!sent && g_portal_active) {
+                uint32_t now = to_ms_since_boot(get_absolute_time());
+                if (now - last_status_ms >= 20) {  /* 50 Hz, matching real portal */
+                    build_status(resp);
+                    tud_hid_report(0, resp, REPORT_LEN);
+                    last_status_ms = now;
+                }
             }
         }
     }

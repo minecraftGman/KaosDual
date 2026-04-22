@@ -30,7 +30,7 @@ target_link_libraries(kaos_pico
 )
 
 # UART1 on GPIO4/5, USB on the default USB pins
-pico_enable_stdio_uart(kaos_pico 0)   # disable stdio on UART (we use it for protocol)
-pico_enable_stdio_usb(kaos_pico 0)    # disable stdio on USB  (we use it for HID)
+pico_enable_stdio_uart(kaos_pico 0)   # disable stdio on UART1 (used for protocol)
+pico_enable_stdio_usb(kaos_pico 0)    # disable stdio on USB  (used for HID)
 
 pico_add_extra_outputs(kaos_pico)

@@ -7,9 +7,11 @@ slot_t g_slots[MAX_SLOTS] = {0};
 void slots_load(uint8_t slot, const uint8_t *dump) {
     if (slot >= MAX_SLOTS) return;
     slot_t *s = &g_slots[slot];
+    /* Store raw encrypted dump — the game decrypts itself using key derivation.
+     * A real portal serves raw MIFARE block data, never decrypted. */
     memcpy(s->data, dump, SKYLANDER_DUMP_SIZE);
-    memcpy(s->uid, dump, 4);          /* UID is first 4 bytes of block 0 */
-    decrypt_skylander(s->data, s->uid);
+    memcpy(s->uid, dump, 4);   /* UID is first 4 bytes of block 0 */
+    /* DO NOT decrypt here — game expects encrypted data */
     s->loaded = true;
     s->active = true;
     s->dirty  = false;

@@ -43,6 +43,7 @@ typedef enum {
     MSG_SET_PORTAL_TYPE = 0x03, /* ESP32 → Pico: change portal type [type:1] */
     MSG_WRITE_BACK  = 0x10,   /* Pico → ESP32: game wrote, save to SD */
     MSG_PICO_READY  = 0x11,   /* Pico → ESP32: boot complete */
+    MSG_DEBUG       = 0x20,   /* Pico → ESP32: debug string */
 } kaos_msg_t;
 
 /* Build a frame into out_buf (must be >= payload_len + 4).

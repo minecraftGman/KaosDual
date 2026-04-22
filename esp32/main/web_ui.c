@@ -567,7 +567,7 @@ static esp_err_t handle_upload(httpd_req_t *req) {
 
     /* Read entire multipart body into a heap buffer */
     int total_len = req->content_len;
-    if (total_len <= 0 || total_len > 8192) {
+    if (total_len <= 0 || total_len > 16384) {
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"Bad size\"}");
         return ESP_OK;
@@ -620,13 +620,35 @@ static esp_err_t handle_upload(httpd_req_t *req) {
     int data_len = (int)(data_end - data_start);
     ESP_LOGI(TAG, "Upload: '%s' %d bytes", filename, data_len);
 
+    /* Skylander dumps must be exactly 1024 bytes.
+     * Some formats (e.g. Flipper Zero .nfc) have headers — find the 1024-byte
+     * block by scanning for the last 1024-byte aligned chunk, or just take
+     * the last 1024 bytes if the file is larger. */
+    char *dump_start = data_start;
+    int   dump_len   = data_len;
+
+    if (data_len > SKYLANDER_DUMP_SIZE) {
+        /* Take the first 1024 bytes — headers are prepended in some formats,
+         * but the actual MIFARE dump starts right at the beginning.
+         * 1070 bytes = 1024 dump + 46 byte footer/padding, so just truncate. */
+        dump_len = SKYLANDER_DUMP_SIZE;
+        ESP_LOGW(TAG, "File is %d bytes, saving first %d bytes",
+                 data_len, SKYLANDER_DUMP_SIZE);
+    } else if (data_len < SKYLANDER_DUMP_SIZE) {
+        ESP_LOGE(TAG, "File too small: %d bytes (need %d)", data_len, SKYLANDER_DUMP_SIZE);
+        free(body);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"File too small — need 1024 bytes\"}");
+        return ESP_OK;
+    }
+
     /* Write to SPIFFS */
     char full[96];
     spiffs_full_path(filename, full, sizeof(full));
     FILE *f = fopen(full, "wb");
     bool ok = false;
     if (f) {
-        ok = (fwrite(data_start, 1, data_len, f) == (size_t)data_len);
+        ok = (fwrite(dump_start, 1, dump_len, f) == (size_t)dump_len);
         fclose(f);
         if (ok) {
             ESP_LOGI(TAG, "Saved to %s", full);

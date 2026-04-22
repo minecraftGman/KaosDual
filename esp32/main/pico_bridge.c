@@ -79,24 +79,18 @@ static void rx_task(void *arg) {
                 break;
 
             case MSG_WRITE_BACK: {
-                /* Pico sends back the updated decrypted dump after game writes.
-                 * Re-encrypt it and save to SD, and update our in-memory copy. */
+                /* Pico sends back the updated dump after game writes.
+                 * Data is already encrypted (game writes encrypted, Pico stores
+                 * encrypted) — save directly to SPIFFS, no re-encryption needed. */
                 if (len < 1 + SKYLANDER_DUMP_SIZE) break;
                 uint8_t slot = payload[0];
 
                 xSemaphoreTake(g_sky_mutex, portMAX_DELAY);
                 if (slot < 2 && g_skylanders[slot].loaded) {
-                    /* Update ESP32's decrypted in-memory copy */
-                    memcpy(g_skylanders[slot].data, payload + 1, SKYLANDER_DUMP_SIZE);
-
-                    /* Re-encrypt a separate copy for saving to SD */
-                    static uint8_t to_save[SKYLANDER_DUMP_SIZE];
-                    memcpy(to_save, payload + 1, SKYLANDER_DUMP_SIZE);
-                    encrypt_skylander(to_save, g_skylanders[slot].uid);
-
+                    /* Save encrypted dump directly */
                     FILE *f = fopen(g_skylanders[slot].filename, "wb");
                     if (f) {
-                        fwrite(to_save, 1, SKYLANDER_DUMP_SIZE, f);
+                        fwrite(payload + 1, 1, SKYLANDER_DUMP_SIZE, f);
                         fclose(f);
                         ESP_LOGI(TAG, "Saved slot %d → %s", slot,
                                  g_skylanders[slot].filename);
@@ -106,6 +100,14 @@ static void rx_task(void *arg) {
                     }
                 }
                 xSemaphoreGive(g_sky_mutex);
+                break;
+            }
+
+            case MSG_DEBUG: {
+                char msg[48] = {0};
+                int dlen = (len < 47) ? len : 47;
+                memcpy(msg, payload, dlen);
+                ESP_LOGI(TAG, "DBG: %s", msg);
                 break;
             }
 
