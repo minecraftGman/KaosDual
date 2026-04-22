@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/ed9b0758-c3e0-4da7-b5a5-80fc55a9bd7d
+
 # KAOS — Dual-Board Portal (Pi Pico + ESP32)
 
 Bassed off: https://github.com/NicoAICP/KAOS
