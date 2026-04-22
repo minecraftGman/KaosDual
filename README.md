@@ -1,5 +1,3 @@
-<img width="1920" height="1080" alt="KaosDualDiagram" src="https://github.com/user-attachments/assets/3083ad40-4919-4aa9-a266-54dcbb42415d" />
-
 
 https://github.com/user-attachments/assets/ed9b0758-c3e0-4da7-b5a5-80fc55a9bd7d
 
@@ -52,6 +50,8 @@ Your phone or browser
 | GND    | GND  | Ground  |
 
 Both boards run at 3.3V — no level shifting needed.
+
+<img width="1920" height="1080" alt="KaosDualDiagram" src="https://github.com/user-attachments/assets/3083ad40-4919-4aa9-a266-54dcbb42415d" />
 
 ### LCD1602 → ESP32 (I2C, PCF8574 backpack)
 
