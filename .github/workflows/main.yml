@@ -1,71 +1,101 @@
 name: Build KAOS Firmware
 
-# Runs on every push to any branch, and on pull requests
 on:
   push:
   pull_request:
-  # Also lets you trigger a build manually from the Actions tab
   workflow_dispatch:
 
 jobs:
 
   # -------------------------------------------------------------------------
-  # Job 1: Build the Pi Pico firmware
+  # Job 1: Build Pi Pico firmware
   # -------------------------------------------------------------------------
   build-pico:
     name: Build Pi Pico (.uf2)
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
 
       - name: Install dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y \
-            cmake gcc-arm-none-eabi \
-            libnewlib-arm-none-eabi \
-            libstdc++-arm-none-eabi-newlib \
+          sudo apt-get install -y cmake gcc-arm-none-eabi \
+            libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib \
             build-essential git python3
 
       - name: Clone Pico SDK
         run: |
           git clone --depth 1 --branch 1.5.1 \
             https://github.com/raspberrypi/pico-sdk.git
-          cd pico-sdk
-          git submodule update --init --depth 1
+          cd pico-sdk && git submodule update --init --depth 1
 
-      - name: Build Pico firmware
+      - name: Build firmware for Pi Pico
         run: |
-          cd pico
-          mkdir build && cd build
+          cd pico && mkdir build && cd build
           cmake .. \
             -DPICO_SDK_PATH=${{ github.workspace }}/pico-sdk \
+            -DPICO_BOARD=pico \
             -DCMAKE_BUILD_TYPE=Release
           make -j$(nproc)
 
-      - name: Upload Pico firmware
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: kaos-pico-firmware
           path: pico/build/kaos_pico.uf2
           if-no-files-found: error
 
   # -------------------------------------------------------------------------
-  # Job 2: Build the ESP32 firmware
+  # Job 2: Build RP2040 Zero firmware
+  # -------------------------------------------------------------------------
+  build-rp2040-zero:
+    name: Build RP2040 Zero (.uf2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y cmake gcc-arm-none-eabi \
+            libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib \
+            build-essential git python3
+
+      - name: Clone Pico SDK
+        run: |
+          git clone --depth 1 --branch 1.5.1 \
+            https://github.com/raspberrypi/pico-sdk.git
+          cd pico-sdk && git submodule update --init --depth 1
+
+      - name: Build
+        run: |
+          cd pico && mkdir build && cd build
+          cmake .. \
+            -DPICO_SDK_PATH=${{ github.workspace }}/pico-sdk \
+            -DPICO_BOARD=waveshare_rp2040_zero \
+            -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+          mv kaos_pico.uf2 kaos_rp2040_zero.uf2
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kaos-rp2040-zero-firmware
+          path: pico/build/kaos_rp2040_zero.uf2
+          if-no-files-found: error
+
+  # -------------------------------------------------------------------------
+  # Job 3: Build ESP32 firmware
   # -------------------------------------------------------------------------
   build-esp32:
     name: Build ESP32 (.bin)
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Build ESP32 firmware using official ESP-IDF action
+      - name: Build ESP32 firmware
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.1.2
@@ -73,11 +103,9 @@ jobs:
           path: esp32
           command: idf.py build
 
-      - name: Upload ESP32 firmware
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: kaos-esp32-firmware
-          # Upload all the files needed for flashing
           path: |
             esp32/build/kaos_esp32_dual.bin
             esp32/build/bootloader/bootloader.bin
@@ -86,79 +114,73 @@ jobs:
           if-no-files-found: error
 
   # -------------------------------------------------------------------------
-  # Job 3: Bundle both into one convenient download (runs after both build)
+  # Job 4: Bundle everything
   # -------------------------------------------------------------------------
   bundle:
-    name: Bundle firmware + flash instructions
+    name: Bundle firmware
     runs-on: ubuntu-latest
-    needs: [build-pico, build-esp32]
-
+    needs: [build-pico, build-rp2040-zero, build-esp32]
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Download Pico artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: kaos-pico-firmware
           path: bundle/pico
 
-      - name: Download ESP32 artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: kaos-rp2040-zero-firmware
+          path: bundle/rp2040-zero
+
+      - uses: actions/download-artifact@v4
         with:
           name: kaos-esp32-firmware
           path: bundle/esp32
 
       - name: Write flash instructions
         run: |
-          cat > bundle/HOW_TO_FLASH.txt << 'EOF'
-          ╔══════════════════════════════════════════╗
-          ║        KAOS Dual Firmware Bundle         ║
-          ╚══════════════════════════════════════════╝
+          cat > bundle/HOW_TO_FLASH.txt << 'INSTEOF'
+          ╔══════════════════════════════════════════════════╗
+          ║           KAOS Dual Firmware Bundle              ║
+          ╚══════════════════════════════════════════════════╝
 
-          ── Pi Pico ────────────────────────────────
-          File: pico/kaos_pico.uf2
+          ── RP2040 Boards (Pi Pico or RP2040 Zero) ─────────
 
-          1. Hold the BOOTSEL button on the Pico
-          2. Plug it into your PC via USB while holding BOOTSEL
-          3. Release BOOTSEL — it mounts as a USB drive called RPI-RP2
-          4. Drag and drop kaos_pico.uf2 onto that drive
-          5. The Pico reboots automatically — done!
+          Pi Pico:      bundle/pico/kaos_pico.uf2
+          RP2040 Zero:  bundle/rp2040-zero/kaos_rp2040_zero.uf2
 
-          ── ESP32 ──────────────────────────────────
-          Files: esp32/
+          Flash instructions (same for both):
+          1. Hold BOOTSEL button
+          2. Plug into PC via USB while holding BOOTSEL
+          3. Release — mounts as RPI-RP2 drive
+          4. Drag the .uf2 file onto the drive
+          5. Board reboots automatically
 
-          Option A — Using esptool.py (pip install esptool):
+          ── ESP32 ───────────────────────────────────────────
 
-            esptool.py --chip esp32 --port COM3 --baud 460800 \
-              write_flash \
-              0x1000  esp32/bootloader.bin \
-              0x8000  esp32/partition-table.bin \
-              0x10000 esp32/kaos_esp32_dual.bin
+          esptool.py --chip esp32 --port COM3 --baud 460800 \
+            write_flash \
+            0x1000  esp32/bootloader.bin \
+            0x8000  esp32/partition-table.bin \
+            0x10000 esp32/kaos_esp32_dual.bin
 
-          (Replace COM3 with your port — COMx on Windows, /dev/ttyUSB0 on Linux/Mac)
+          (Replace COM3 with your port)
 
-          Option B — Using ESP Flash Download Tool (Windows GUI):
-            https://www.espressif.com/en/support/download/other-tools
-            Flash the three .bin files at the addresses above.
+          ── Wiring ──────────────────────────────────────────
 
-          ── Wiring reminder ────────────────────────
-          ESP32 GPIO17  →  Pico GPIO5  (UART TX→RX)
-          ESP32 GPIO16  ←  Pico GPIO4  (UART RX←TX)
-          ESP32 GND     ─  Pico GND
+          ESP32 GPIO17  →  RP2040 GPIO5  (UART TX→RX)
+          ESP32 GPIO16  ←  RP2040 GPIO4  (UART RX←TX)
+          ESP32 GND     ─  RP2040 GND
+          RP2040 VBUS   →  ESP32 VIN     (power from console USB)
 
-          SD card (FAT32) → ESP32 SPI pins
-          LCD1602 (I2C)   → ESP32 GPIO21/22
+          ── First boot ──────────────────────────────────────
+          1. Plug RP2040 into console via USB
+          2. Connect to WiFi: KAOS-Portal  pw: skylands1
+          3. Open browser: http://192.168.4.1
+          INSTEOF
 
-          ── First boot ─────────────────────────────
-          1. Power ESP32 first (USB power or 5V)
-          2. Then plug Pico into the console/PC via USB
-          3. Connect phone/PC to WiFi: KAOS-Portal
-          4. Open browser: http://192.168.4.1
-          EOF
-
-      - name: Upload bundle
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: kaos-firmware-bundle
           path: bundle/
