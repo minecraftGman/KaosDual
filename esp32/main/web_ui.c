@@ -260,6 +260,9 @@ static const char HTML_PAGE[] =
     "const actions=document.getElementById('c'+i+'-actions');"
     "if(!info||!files||!actions)continue;"
     "card.classList.toggle('active',s.loaded);"
+    /* Always sync _selFile from DOM before doing anything else */
+    "const _curSel=document.getElementById('s'+i);"
+    "if(_curSel&&_curSel.value)_selFile[i]=_curSel.value;"
 
     /* Info section — update on every poll */
     "if(s.loaded){"
@@ -278,16 +281,16 @@ static const char HTML_PAGE[] =
       "if(S.files&&S.files.length){"
         "const curSel=document.getElementById('s'+i);"
         "if(curSel&&curSel.value)_selFile[i]=curSel.value;"
-        "const delBtn='<button class=\"btn btn-del\" onclick=\"delFile(document.getElementById(\\\"s\\\"+'+i+').value)\" style=\"background:transparent;border:1px solid #ef4444;color:#ef4444;margin-top:7px;width:100%;padding:9px;border-radius:8px;font-size:.87rem;font-weight:600;cursor:pointer\">&#128465; Delete</button>';"
-        "const selHtml='<select id=\"s'+i+'\" onchange=\"_selFile['+i+']=this.value\">'"
-          "+S.files.map(f=>'<option'+(f===_selFile[i]?' selected':'')+'>'+f+'</option>').join('')"
-          "+'</select>';"
-        "files.innerHTML=selHtml+delBtn;"
+        "let fhtml='<select id=\"s'+i+'\" onchange=\"_selFile['+i+']=this.value\">';"
+        "fhtml+=S.files.map(f=>'<option'+(f===_selFile[i]?' selected':'')+'>'+f+'</option>').join('');"
+        "fhtml+='</select>';"
+        "fhtml+='<button class=\"btn btn-del\" onclick=\"delSel('+i+')\" style=\"background:transparent;border:1px solid #ef4444;color:#ef4444;margin-top:7px;width:100%;padding:9px;border-radius:8px;font-size:.87rem;font-weight:600;cursor:pointer\">&#128465; Delete</button>';"
+        "files.innerHTML=fhtml;"
         "if(!_selFile[i]){const sel=document.getElementById('s'+i);if(sel)_selFile[i]=sel.value;}"
         "_filesBuilt[i]=true;"
       "}else{"
-        "files.innerHTML='<div class=\"nofiles\">No files — upload one above</div>';"
-        "_filesBuilt[i]=false;"  /* reset if files disappear */
+        "files.innerHTML='<div class=\"nofiles\">No files \u2014 upload one above</div>';"
+        "_filesBuilt[i]=false;"
       "}"
     "}"
 
@@ -305,14 +308,23 @@ static const char HTML_PAGE[] =
   "}"
 "}"
 
+"function delSel(slot){"
+  "const sel=document.getElementById('s'+slot);"
+  "if(sel&&sel.value){_selFile[slot]=sel.value;delFile(sel.value);}"
+"}"
+
 /* load */
 "async function load(slot){"
+  /* Use _selFile as authoritative selection — sync from DOM first in case user changed it */
   "const sel=document.getElementById('s'+slot);"
-  "if(!sel)return;st('Loading...',1);"
+  "if(sel&&sel.value)_selFile[slot]=sel.value;"
+  "const file=_selFile[slot];"
+  "if(!file){st('No file selected',0);return;}"
+  "st('Loading...',1);"
   "try{"
     "const j=await(await fetch('/api/load',{method:'POST',"
       "headers:{'Content-Type':'application/json'},"
-      "body:JSON.stringify({slot,file:sel.value})})).json();"
+      "body:JSON.stringify({slot,file})})).json();"
     "if(j.ok){await go();st('Loaded',1);}else st('Failed: '+(j.error||'?'),0);"
   "}catch(e){st('Error',0)}"
 "}"
