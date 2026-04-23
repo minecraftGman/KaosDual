@@ -5,6 +5,10 @@ project(kaos_pico C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
+# Allow repo-local board definitions (e.g. waveshare_rp2040_zero.h)
+# This means the build works even if the SDK version doesn't include the board.
+set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/boards)
+
 pico_sdk_init()
 
 add_executable(kaos_pico

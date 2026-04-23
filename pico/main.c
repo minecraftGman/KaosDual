@@ -55,6 +55,9 @@ static uint8_t load_portal_type(void) {
 static void save_and_reboot(uint8_t type) {
     watchdog_hw->scratch[4] = PORTAL_TYPE_MAGIC;
     watchdog_hw->scratch[5] = type;
+#ifdef PICO_DEFAULT_LED_PIN
+    gpio_put(PICO_DEFAULT_LED_PIN, 1);
+#endif
     watchdog_reboot(0, 0, 10);
     while (1) tight_loop_contents();
 }
@@ -196,15 +199,31 @@ static void handle_command(const uint8_t *cmd) {
 
     case 'R':
         /* Ready — identifies portal type to game.
-         * Trap Team checks bytes 1+2 and rejects non-Traptanium portals. */
+         * Exact IDs from Texthead1/Skylanders-Portal-IDs (verified against FCC):
+         *   SSA PS3/Wii wireless: 0x01 0x29
+         *   Giants PS3/Wii:       0x01 0x3D
+         *   Swap Force:           0x02 0x03
+         *   Traptanium (TT):      0x02 0x18
+         *   Imaginators:          0x02 0x0A 0x05 0x08
+         * Newer portals are backwards compatible so Imaginators ID works for all
+         * older games too — but SSA specifically checks for its own ID.
+         */
         g_portal_active = true;
         resp[0] = 'R';
         switch (g_portal_type) {
-            case 2:  resp[1]=0x02; resp[2]=0x18; break; /* Trap Team   */
-            case 3:  resp[1]=0x02; resp[2]=0x0A; break; /* Imaginators */
-            case 0:
-            case 1:
-            default: resp[1]=0x01; resp[2]=0x3D; break; /* SSA/Giants  */
+            case 0:  /* SSA */
+                resp[1]=0x01; resp[2]=0x29;
+                break;
+            case 1:  /* Giants / Swap Force */
+                resp[1]=0x01; resp[2]=0x3D;
+                break;
+            case 2:  /* Trap Team */
+                resp[1]=0x02; resp[2]=0x18;
+                break;
+            case 3:  /* Imaginators (default) */
+            default:
+                resp[1]=0x02; resp[2]=0x0A; resp[3]=0x05; resp[4]=0x08;
+                break;
         }
         break;
 
@@ -365,23 +384,36 @@ static void core1_uart_rx(void) {
                 dbg[11] = '\0';
                 pico_debug(dbg);
 
-                /* Push arrival status packets directly into the queue */
-                uint32_t arrival_bits = 0x3u << (slot * 2);
-                uint32_t present_bits = 0x1u << (slot * 2);
-                uint8_t pkt[REPORT_LEN];
-
-                for (int i = 0; i < 3; i++) {
-                    memset(pkt, 0, REPORT_LEN);
-                    pkt[0] = 'S';
-                    pkt[1] = (arrival_bits >> 0) & 0xFF;
-                    pkt[2] = (arrival_bits >> 8) & 0xFF;
-                    pkt[3] = (arrival_bits >> 16) & 0xFF;
-                    pkt[4] = (arrival_bits >> 24) & 0xFF;
-                    pkt[5] = 0;
-                    pkt[6] = 0x01;
-                    q_push(pkt);
+                /* Push arrival status packets.
+                 * Must include ALL currently loaded slots in each packet,
+                 * not just the new one — otherwise the game thinks other
+                 * figures disappeared when the new one arrived. */
+                uint32_t all_present = 0;
+                uint32_t save2 = spin_lock_blocking(s_slot_lock);
+                for (int si = 0; si < MAX_SLOTS; si++) {
+                    if (g_slots[si].loaded && g_slots[si].active)
+                        all_present |= (0x1u << (si * 2));
                 }
-                for (int i = 0; i < 2; i++) {
+                spin_unlock(s_slot_lock, save2);
+
+                /* New slot gets arrival bits (11), others stay present (01) */
+                uint32_t arrival_bits = all_present | (0x2u << (slot * 2)); /* set upper bit = 11 */
+                uint32_t present_bits = all_present;
+
+                uint8_t pkt[REPORT_LEN];
+                /* One arrival packet, then steady-state present packets */
+                memset(pkt, 0, REPORT_LEN);
+                pkt[0] = 'S';
+                pkt[1] = (arrival_bits >> 0) & 0xFF;
+                pkt[2] = (arrival_bits >> 8) & 0xFF;
+                pkt[3] = (arrival_bits >> 16) & 0xFF;
+                pkt[4] = (arrival_bits >> 24) & 0xFF;
+                pkt[5] = 0;
+                pkt[6] = 0x01;
+                q_push(pkt);
+
+                /* Follow with present-only packets */
+                for (int i = 0; i < 3; i++) {
                     memset(pkt, 0, REPORT_LEN);
                     pkt[0] = 'S';
                     pkt[1] = (present_bits >> 0) & 0xFF;
@@ -426,10 +458,13 @@ int main(void) {
     q_lock      = spin_lock_instance(spin_lock_claim_unused(true));
     s_slot_lock = spin_lock_instance(spin_lock_claim_unused(true));
 
-    /* LED */
+    /* LED — only on standard Pico (GP25). RP2040 Zero uses a NeoPixel
+     * on GP16 which needs a different driver; skip it to keep things simple. */
+#ifdef PICO_DEFAULT_LED_PIN
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     gpio_put(PICO_DEFAULT_LED_PIN, 0);
+#endif
 
     /* Load portal type from watchdog scratch */
     g_portal_type = load_portal_type();
@@ -460,7 +495,9 @@ int main(void) {
         /* Portal type change — save and reboot */
         if (g_type_pending) {
             g_type_pending = false;
+#ifdef PICO_DEFAULT_LED_PIN
             gpio_put(PICO_DEFAULT_LED_PIN, 1);
+#endif
             sleep_ms(50);
             save_and_reboot(g_pending_type);
         }
