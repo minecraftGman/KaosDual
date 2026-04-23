@@ -109,7 +109,7 @@ idf.py -p /dev/ttyUSB0 flash    # Windows: COM3 etc.
 
 ## How Write-Back Works
 
-When the game saves progress to a Skylander (XP, gold, abilities), it writes blocks back through the HID protocol to the Pico. The Pico re-encrypts the updated dump and sends it back to the ESP32 over UART (`MSG_WRITE_BACK`). The ESP32 saves it back to the original file on the SD card — so your Skylander's progress is preserved.
+When the game saves progress to a Skylander (XP, gold, abilities), it writes blocks back through the HID protocol to the Pico. The Pico re-encrypts the updated dump and sends it back to the ESP32 over UART (`MSG_WRITE_BACK`). The ESP32 saves it back to the original file on spiffs protocal for internal storage on the esp32 — so your Skylander's progress is preserved.
 
 ---
 
