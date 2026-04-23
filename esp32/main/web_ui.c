@@ -289,10 +289,8 @@ static const char HTML_PAGE[] =
       "}"
     "}"
 
-    /* Actions section — update when loaded state changes */
-    "const loadedKey='_wasLoaded'+i;"
-    "if(window[loadedKey]!==s.loaded||filesChanged){"
-      "window[loadedKey]=s.loaded;"
+    /* Actions section — always rebuild to ensure correct slot number in onclick */
+    "{"
       "let ah='';"
       "if(S.files&&S.files.length)ah+=`<button class='btn btn-load' onclick='load(${i})'>Load</button>`;"
       "else ah+=`<button class='btn btn-load' disabled>Load</button>`;"
