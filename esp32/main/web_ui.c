@@ -229,7 +229,8 @@ static const char HTML_PAGE[] =
 "let S={files:[],slots:[{loaded:false},{loaded:false}],portal_type:3};"
 "let _ptypeUserSet=false;"
 "let _selFile=[null,null];"
-"let _lastFiles=null;"  /* null = never rendered yet */
+"let _lastFiles=null;"
+"let _filesBuilt=[false,false];"  /* true once files div has been populated */
 
 /* fetchState */
 "async function go(){"
@@ -238,7 +239,7 @@ static const char HTML_PAGE[] =
     /* Only trigger full re-render if file list changed */
     "const nf=JSON.stringify(ns.files||[]);"
     "const filesChanged=(nf!==_lastFiles);"
-    "if(filesChanged)_lastFiles=nf;"
+    "if(filesChanged){_lastFiles=nf;_filesBuilt=[false,false];}"
     "S=ns;"
     "render(filesChanged);st('Connected',1);"
     "if(!_ptypeUserSet){"
@@ -272,31 +273,32 @@ static const char HTML_PAGE[] =
       "info.innerHTML=`<div class='empty'><div class='eicon'>👻</div><p>No Skylander</p></div>`;"
     "}"
 
-    /* Files section — ONLY update when file list actually changed or first render */
-    "if(filesChanged||!files.querySelector('select,div')){"
+    /* Files section — only build once, then only on actual file list change */
+    "if(!_filesBuilt[i]||filesChanged){"
       "if(S.files&&S.files.length){"
-        /* Save current selection before rebuilding */
         "const curSel=document.getElementById('s'+i);"
         "if(curSel&&curSel.value)_selFile[i]=curSel.value;"
-        "const delBtn=`<button class='btn btn-del' onclick='delFile(document.getElementById(\"s\"+${i}).value)' style='background:transparent;border:1px solid #ef4444;color:#ef4444;margin-top:7px;width:100%;padding:9px;border-radius:8px;font-size:.87rem;font-weight:600;cursor:pointer'>&#128465; Delete</button>`;"
-        "const selHtml=`<select id='s${i}' onchange='_selFile[${i}]=this.value'>`"
-          "+S.files.map(f=>`<option${f===_selFile[i]?' selected':''}>${f}</option>`).join('')"
+        "const delBtn='<button class=\"btn btn-del\" onclick=\"delFile(document.getElementById(\\\"s\\\"+'+i+').value)\" style=\"background:transparent;border:1px solid #ef4444;color:#ef4444;margin-top:7px;width:100%;padding:9px;border-radius:8px;font-size:.87rem;font-weight:600;cursor:pointer\">&#128465; Delete</button>';"
+        "const selHtml='<select id=\"s'+i+'\" onchange=\"_selFile['+i+']=this.value\">'"
+          "+S.files.map(f=>'<option'+(f===_selFile[i]?' selected':'')+'>'+f+'</option>').join('')"
           "+'</select>';"
         "files.innerHTML=selHtml+delBtn;"
         "if(!_selFile[i]){const sel=document.getElementById('s'+i);if(sel)_selFile[i]=sel.value;}"
+        "_filesBuilt[i]=true;"
       "}else{"
-        "files.innerHTML=`<div class='nofiles'>No files — upload one above</div>`;"
+        "files.innerHTML='<div class=\"nofiles\">No files — upload one above</div>';"
+        "_filesBuilt[i]=false;"  /* reset if files disappear */
       "}"
     "}"
 
     /* Actions section — always rebuild to ensure correct slot number in onclick */
     "{"
       "let ah='';"
-      "if(S.files&&S.files.length)ah+=`<button class='btn btn-load' onclick='load(${i})'>Load</button>`;"
-      "else ah+=`<button class='btn btn-load' disabled>Load</button>`;"
+      "if(S.files&&S.files.length)ah+='<button class=\"btn btn-load\" onclick=\"load('+i+')\">Load</button>';"
+      "else ah+='<button class=\"btn btn-load\" disabled>Load</button>';"
       "if(s.loaded){"
-        "ah+=`<button class='btn btn-dl' onclick='dl(${i})'>&#8681; Download save</button>`;"
-        "ah+=`<button class='btn btn-ul' onclick='unload(${i})'>Unload</button>`;"
+        "ah+='<button class=\"btn btn-dl\" onclick=\"dl('+i+')\">&#8681; Download save</button>';"
+        "ah+='<button class=\"btn btn-ul\" onclick=\"unload('+i+')\">Unload</button>';"
       "}"
       "actions.innerHTML=ah;"
     "}"
