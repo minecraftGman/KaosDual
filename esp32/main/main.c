@@ -135,11 +135,23 @@ void scan_files(void) {
         if (is_sky_file(e->d_name)) {
             strncpy(g_file_list[g_file_count], e->d_name, 63);
             g_file_list[g_file_count][63] = '\0';
-            ESP_LOGI(TAG, "  [%d] %s", g_file_count, e->d_name);
             g_file_count++;
         }
     }
     closedir(dp);
+
+    /* Sort alphabetically so JSON comparison is stable across polls */
+    for (int a = 0; a < g_file_count - 1; a++)
+        for (int b = a + 1; b < g_file_count; b++)
+            if (strcmp(g_file_list[a], g_file_list[b]) > 0) {
+                char tmp[64];
+                strncpy(tmp, g_file_list[a], 64);
+                strncpy(g_file_list[a], g_file_list[b], 64);
+                strncpy(g_file_list[b], tmp, 64);
+            }
+
+    for (int i = 0; i < g_file_count; i++)
+        ESP_LOGI(TAG, "  [%d] %s", i, g_file_list[i]);
     ESP_LOGI(TAG, "%d file(s)", g_file_count);
 }
 
