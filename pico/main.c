@@ -437,7 +437,16 @@ static void core1_uart_rx(void) {
             }
             break;
 
-        case MSG_SET_PORTAL_TYPE:
+        case MSG_ESP_READY:
+            /* ESP32 just booted — unload all slots and re-announce ourselves */
+            {
+                uint32_t save = spin_lock_blocking(s_slot_lock);
+                for (int si = 0; si < MAX_SLOTS; si++) slots_unload(si);
+                spin_unlock(s_slot_lock, save);
+            }
+            uart_send(MSG_PICO_READY, NULL, 0);
+            pico_debug("ESP_READY:ack");
+            break;
             if (len >= 1 && payload[0] != g_portal_type && payload[0] <= 3) {
                 g_pending_type = payload[0];
                 g_type_pending = true;

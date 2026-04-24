@@ -195,13 +195,13 @@ static const char HTML_PAGE[] =
     "<span class='lbl'>Player 1</span><span class='pnum'>P1</span></div>"
     "<div id='c0-info'></div>"
     "<div id='c0-files'></div>"
-    "<div id='c0-actions'></div>"
+    "<div id='c0-acts'></div>"
   "</div>"
   "<div class='card' id='c1'><div class='card-hdr'>"
     "<span class='lbl'>Player 2</span><span class='pnum'>P2</span></div>"
     "<div id='c1-info'></div>"
     "<div id='c1-files'></div>"
-    "<div id='c1-actions'></div>"
+    "<div id='c1-acts'></div>"
   "</div>"
 "</div>"
 
@@ -226,39 +226,47 @@ static const char HTML_PAGE[] =
 "const EL={'Fire':'🔥','Water':'💧','Earth':'🪨','Air':'🌪️',"
   "'Life':'🌿','Undead':'💀','Magic':'✨','Tech':'⚙️','Light':'☀️','Dark':'🌑'};"
 "const TN={0:\"Spyro's Adv\",1:'Giants/SwapForce',2:'Trap Team',3:'Imaginators'};"
+
+/* ── State ── */
 "let S={files:[],slots:[{loaded:false},{loaded:false}],portal_type:3};"
 "let _ptypeUserSet=false;"
+"let _prevFileList='';"  /* JSON snapshot of last known file list */
 
-/* The ONLY persistent state: what file each slot has selected */
-"let _sel=['',''];"
-
+/* ── Poll ── */
 "async function go(){"
   "try{"
     "S=await(await fetch('/api/state')).json();"
-    "render();st('Connected',1);"
+    "const newFL=JSON.stringify(S.files||[]);"
+    "const flChanged=(newFL!==_prevFileList);"
+    "if(flChanged)_prevFileList=newFL;"
+    "updateSlots(flChanged);"
     "if(!_ptypeUserSet){"
       "document.getElementById('ptype').value=S.portal_type||3;"
       "document.getElementById('pbadge').textContent=TN[S.portal_type||3];"
     "}"
     "_ptypeUserSet=false;"
+    "st('Connected',1);"
   "}catch(e){st('No connection',0)}"
 "}"
 
-"function render(){"
+/* ── Slot updater ── */
+"function updateSlots(flChanged){"
   "for(let i=0;i<2;i++){"
     "const s=S.slots[i];"
     "const card=document.getElementById('c'+i);"
     "const info=document.getElementById('c'+i+'-info');"
     "const fbox=document.getElementById('c'+i+'-files');"
-    "const acts=document.getElementById('c'+i+'-actions');"
+    "const acts=document.getElementById('c'+i+'-acts');"
     "if(!card||!info||!fbox||!acts)continue;"
+
+    /* Card highlight */
     "card.classList.toggle('active',s.loaded);"
 
-    /* Info — always update */
+    /* Info panel — always refresh (shows loaded character or empty) */
     "if(s.loaded){"
-      "const e=s.element||'Magic',em=EL[e]||'✨';"
+      "const e=s.element||'Magic';"
       "info.innerHTML='<div class=\"portrait\"><div class=\"ebg el-bg-'+e+'\"></div>'"
-        "+'<div class=\"emoji\">'+em+'</div></div>'"
+        "+'<div class=\"emoji\">'+(EL[e]||'✨')+'</div></div>'"
         "+'<div class=\"sname\">'+(s.name||'Unknown')+'</div>'"
         "+'<div class=\"selem el-'+e+'\">'+e+'</div>'"
         "+'<div class=\"sfile\">'+(s.filename||'')+'</div>';"
@@ -266,68 +274,75 @@ static const char HTML_PAGE[] =
       "info.innerHTML='<div class=\"empty\"><div class=\"eicon\">👻</div><p>No Skylander</p></div>';"
     "}"
 
-    /* File selector — read current value FIRST, then rebuild, then restore */
-    "if(S.files&&S.files.length){"
-      /* Read current DOM value before touching anything */
-      "const domSel=document.getElementById('s'+i);"
-      "if(domSel&&domSel.value)_sel[i]=domSel.value;"
-      /* If _sel[i] not in file list, default to first file */
-      "if(!S.files.includes(_sel[i]))_sel[i]=S.files[0];"
-      /* Build select with correct option pre-selected */
-      "let fh='<select id=\"s'+i+'\" onchange=\"_sel['+i+']=this.value\">';"
-      "fh+=S.files.map(f=>'<option'+(f===_sel[i]?' selected':'')+'>'+f+'</option>').join('');"
-      "fh+='</select>';"
-      "fh+='<button class=\"btn btn-del\" onclick=\"delSel('+i+')\" "
-        "style=\"background:transparent;border:1px solid #ef4444;color:#ef4444;"
-        "margin-top:7px;width:100%;padding:9px;border-radius:8px;"
-        "font-size:.87rem;font-weight:600;cursor:pointer\">&#128465; Delete</button>';"
-      "fbox.innerHTML=fh;"
-    "}else{"
-      "fbox.innerHTML='<div class=\"nofiles\">No files \u2014 upload one above</div>';"
+    /* File selector — ONLY rebuild when file list changed */
+    "if(flChanged){"
+      "if(S.files&&S.files.length){"
+        /* Preserve whatever is currently selected */
+        "const prev=fbox.querySelector('select');"
+        "const prevVal=prev?prev.value:'';"
+        "const useVal=(S.files.includes(prevVal))?prevVal:S.files[0];"
+        "let h='<select id=\"s'+i+'\" onchange=\"selChange('+i+',this.value)\">';"
+        "h+=S.files.map(f=>'<option'+(f===useVal?' selected':'')+'>'+f+'</option>').join('');"
+        "h+='</select><button class=\"btn btn-del\" onclick=\"delSel('+i+')\" "
+          "style=\"background:transparent;border:1px solid #ef4444;color:#ef4444;"
+          "margin-top:7px;width:100%;padding:9px;border-radius:8px;"
+          "font-size:.87rem;font-weight:600;cursor:pointer\">&#128465; Delete</button>';"
+        "fbox.innerHTML=h;"
+      "}else{"
+        "fbox.innerHTML='<p style=\"color:#888;font-size:.85rem;margin:8px 0\">No files — upload one above</p>';"
+      "}"
     "}"
 
-    /* Actions — always update */
-    "let ah='';"
-    "if(S.files&&S.files.length)ah+='<button class=\"btn btn-load\" onclick=\"load('+i+')\">Load</button>';"
-    "else ah+='<button class=\"btn btn-load\" disabled>Load</button>';"
-    "if(s.loaded){"
-      "ah+='<button class=\"btn btn-dl\" onclick=\"dl('+i+')\">&#8681; Download save</button>';"
-      "ah+='<button class=\"btn btn-ul\" onclick=\"unload('+i+')\">Unload</button>';"
+    /* Action buttons — only rebuild when loaded state changes */
+    "const lk='_L'+i;"
+    "if(window[lk]!==s.loaded||flChanged){"
+      "window[lk]=s.loaded;"
+      "let ah='';"
+      "if(S.files&&S.files.length)"
+        "ah+='<button class=\"btn btn-load\" onclick=\"load('+i+')\">Load</button>';"
+      "else"
+        "ah+='<button class=\"btn btn-load\" disabled>Load</button>';"
+      "if(s.loaded){"
+        "ah+='<button class=\"btn btn-dl\" onclick=\"dl('+i+')\">&#8681; Download save</button>';"
+        "ah+='<button class=\"btn btn-ul\" onclick=\"unload('+i+')\">Unload</button>';"
+      "}"
+      "acts.innerHTML=ah;"
     "}"
-    "acts.innerHTML=ah;"
   "}"
 "}"
 
+/* ── User interactions ── */
+"function selChange(i,v){}"  /* value already in DOM, nothing to do */
+
 "function delSel(i){"
   "const sel=document.getElementById('s'+i);"
-  "if(sel&&sel.value){_sel[i]=sel.value;delFile(sel.value);}"
+  "if(sel&&sel.value)delFile(sel.value);"
 "}"
 
 "async function load(i){"
   "const sel=document.getElementById('s'+i);"
-  "if(sel&&sel.value)_sel[i]=sel.value;"
-  "if(!_sel[i]){st('Select a file first',0);return;}"
+  "const file=sel?sel.value:'';"
+  "if(!file){st('Select a file first',0);return;}"
   "st('Loading...',1);"
   "try{"
     "const j=await(await fetch('/api/load',{method:'POST',"
       "headers:{'Content-Type':'application/json'},"
-      "body:JSON.stringify({slot:i,file:_sel[i]})})).json();"
-    "if(j.ok){await go();st('Loaded',1);}else st('Failed: '+(j.error||'?'),0);"
+      "body:JSON.stringify({slot:i,file})})).json();"
+    "if(j.ok){_prevFileList='';await go();st('Loaded',1);}else st('Failed: '+(j.error||'?'),0);"
   "}catch(e){st('Error',0)}"
 "}"
 
-/* unload */
-"async function unload(slot){"
+"async function unload(i){"
   "st('Unloading...',1);"
-  "await fetch('/api/unload',{method:'POST',"
-    "headers:{'Content-Type':'application/json'},body:JSON.stringify({slot})});"
-  "await go();st('Unloaded',1);"
+  "try{"
+    "await fetch('/api/unload',{method:'POST',"
+      "headers:{'Content-Type':'application/json'},body:JSON.stringify({slot:i})});"
+    "await go();st('Unloaded',1);"
+  "}catch(e){st('Error',0)}"
 "}"
 
-/* download */
-"function dl(slot){window.location='/api/download?slot='+slot;}"
+"function dl(i){window.location='/api/download?slot='+i;}"
 
-/* upload */
 "async function uploadFile(inp){"
   "const f=inp.files[0];if(!f)return;"
   "const stat=document.getElementById('upstat');"
@@ -335,7 +350,7 @@ static const char HTML_PAGE[] =
   "const fd=new FormData();fd.append('file',f);"
   "try{"
     "const j=await(await fetch('/api/upload',{method:'POST',body:fd})).json();"
-    "if(j.ok){stat.textContent='✓ '+f.name+' saved';await go();}"
+    "if(j.ok){stat.textContent='✓ '+f.name+' saved';_prevFileList='';await go();}"
     "else stat.textContent='✗ '+(j.error||'Upload failed');"
   "}catch(e){stat.textContent='✗ Error'}"
   "inp.value='';"
@@ -347,22 +362,20 @@ static const char HTML_PAGE[] =
   "try{"
     "const j=await(await fetch('/api/delete',{method:'POST',"
       "headers:{'Content-Type':'application/json'},body:JSON.stringify({file:f})})).json();"
-    "if(j.ok){st('Deleted',1);await go();}else st('Delete failed',0);"
+    "if(j.ok){_prevFileList='';st('Deleted',1);await go();}else st('Delete failed',0);"
   "}catch(e){st('Error',0)}"
 "}"
 
-/* sense */
 "async function sense(){"
   "await fetch('/api/sense',{method:'POST'});st('Sense sent',1);"
 "}"
 
-/* portal type */
 "async function setPortalType(v){"
   "_ptypeUserSet=true;"
   "document.getElementById('pbadge').textContent=TN[parseInt(v)];"
   "await fetch('/api/portaltype',{method:'POST',"
     "headers:{'Content-Type':'application/json'},body:JSON.stringify({type:parseInt(v)})});"
-  "st('Portal type saved — unplug & replug Pico to apply',1);"
+  "st('Portal type saved \u2014 unplug & replug Pico to apply',1);"
 "}"
 
 "function st(m,ok){"
