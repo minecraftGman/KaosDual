@@ -178,6 +178,9 @@ static void pico_debug(const char *msg) {
     uart_write_blocking(KAOS_UART, frame, n);
 }
 
+/* Write debounce — updated by handle_command (core 0), read by main loop (core 0) */
+static volatile uint32_t g_last_write_ms[MAX_SLOTS] = {0};
+
 /* -----------------------------------------------------------------------
  * Handle incoming HID command (from SET_REPORT or interrupt OUT)
  * Builds a response and pushes it to the queue, or returns false
@@ -348,7 +351,7 @@ static void uart_send(kaos_msg_t type, const uint8_t *payload, uint16_t len) {
  * ----------------------------------------------------------------------- */
 static volatile bool     g_type_pending   = false;
 static volatile uint8_t  g_pending_type   = 3;
-static volatile uint32_t g_last_write_ms[MAX_SLOTS] = {0};
+
 
 static void core1_uart_rx(void) {
     kaos_parser_t parser;
