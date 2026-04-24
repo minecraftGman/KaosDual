@@ -61,9 +61,16 @@ static void rx_task(void *arg) {
         switch (type) {
             case MSG_PICO_READY:
                 if (!s_pico_ready) {
-                    /* First ready after power-on — send saved portal type once */
                     s_pico_ready = true;
-                    ESP_LOGI(TAG, "Pico ready — syncing portal type");
+                    ESP_LOGI(TAG, "Pico ready — clearing slots and syncing portal type");
+
+                    /* Clear all Pico slots first — ensures clean state on ESP32 reboot */
+                    for (uint8_t sl = 0; sl < 2; sl++) {
+                        vTaskDelay(pdMS_TO_TICKS(50));
+                        pico_bridge_unload(sl);
+                    }
+
+                    /* Then sync saved portal type */
                     nvs_handle_t nvs;
                     uint8_t saved_type = 3;
                     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
@@ -137,6 +144,12 @@ void pico_bridge_init(void) {
     xTaskCreate(rx_task, "pico_rx", 4096, NULL, 10, NULL);
     ESP_LOGI(TAG, "Bridge UART2 ready (TX=%d RX=%d @ %d baud)",
              PIN_TX, PIN_RX, KAOS_BAUD);
+
+    /* Tell Pico the ESP32 just booted — Pico will clear its slots and
+     * re-send MSG_PICO_READY so we can re-sync portal type */
+    vTaskDelay(pdMS_TO_TICKS(500));
+    send_frame(MSG_ESP_READY, NULL, 0);
+    ESP_LOGI(TAG, "Sent ESP_READY to Pico");
 }
 
 void pico_bridge_load(uint8_t slot, const uint8_t *raw_dump) {

@@ -38,12 +38,13 @@
 #define SKYLANDER_DUMP_SIZE 1024
 
 typedef enum {
-    MSG_LOAD        = 0x01,   /* ESP32 → Pico: load slot  */
-    MSG_UNLOAD      = 0x02,   /* ESP32 → Pico: unload slot */
-    MSG_SET_PORTAL_TYPE = 0x03, /* ESP32 → Pico: change portal type [type:1] */
-    MSG_WRITE_BACK  = 0x10,   /* Pico → ESP32: game wrote, save to SD */
-    MSG_PICO_READY  = 0x11,   /* Pico → ESP32: boot complete */
-    MSG_DEBUG       = 0x20,   /* Pico → ESP32: debug string */
+    MSG_LOAD        = 0x01,
+    MSG_UNLOAD      = 0x02,
+    MSG_SET_PORTAL_TYPE = 0x03,
+    MSG_ESP_READY   = 0x04,   /* ESP32 → Pico: ESP32 just booted, please re-send PICO_READY */
+    MSG_WRITE_BACK  = 0x10,
+    MSG_PICO_READY  = 0x11,
+    MSG_DEBUG       = 0x20,
 } kaos_msg_t;
 
 /* Build a frame into out_buf (must be >= payload_len + 4).

@@ -60,7 +60,9 @@ void web_ui_load_portal_type(void) {
 }
 
 /* -----------------------------------------------------------------------
- * HTML page
+ * HTML page — complete rewrite with clean JS architecture
+ * State machine approach: fetch state → diff → update only what changed
+ * No innerHTML rebuilding of interactive elements
  * ----------------------------------------------------------------------- */
 static const char HTML_PAGE[] =
 "<!DOCTYPE html><html lang='en'><head>"
@@ -68,269 +70,351 @@ static const char HTML_PAGE[] =
 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
 "<title>KAOS Portal</title>"
 "<style>"
+"@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700&family=Exo+2:wght@400;600&display=swap');"
 ":root{"
-  "--bg:#0a0a1a;--card:#12122a;--border:#2a2a5a;"
-  "--accent:#7c3aed;--accent2:#a855f7;"
-  "--fire:#ef4444;--water:#3b82f6;--earth:#a16207;"
-  "--air:#06b6d4;--life:#22c55e;--undead:#8b5cf6;"
-  "--magic:#ec4899;--tech:#f59e0b;--light:#fde68a;--dark:#6b7280;"
-  "--text:#e2e8f0;--muted:#64748b;"
+  "--bg:#060612;--surface:#0e0e24;--card:#13132e;"
+  "--border:#1e1e45;--accent:#6d28d9;--glow:#7c3aed;"
+  "--accent2:#a855f7;--hot:#f43f5e;--ok:#10b981;"
+  "--text:#e2e8f0;--muted:#475569;--bright:#f8fafc;"
 "}"
 "*{box-sizing:border-box;margin:0;padding:0}"
 "body{background:var(--bg);color:var(--text);"
-  "font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;padding:16px}"
-"h1{text-align:center;font-size:1.8rem;margin-bottom:4px;"
-  "background:linear-gradient(135deg,var(--accent),var(--accent2));"
-  "-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}"
-".sub{text-align:center;color:var(--muted);font-size:.85rem;margin-bottom:16px}"
-/* Portal bar */
-".pbar{max-width:700px;margin:0 auto 16px;background:var(--card);"
-  "border:1px solid var(--border);border-radius:12px;padding:12px 16px;"
-  "display:flex;align-items:center;gap:10px}"
-".pbar label{font-size:.8rem;color:var(--muted);white-space:nowrap}"
-".pbar select,.pbar select:focus{flex:1;padding:7px 10px;background:#1a1a35;"
-  "border:1px solid var(--border);border-radius:8px;color:var(--text);"
-  "font-size:.88rem;cursor:pointer;outline:none}"
-".pbar select:focus{border-color:var(--accent)}"
-".pbadge{font-size:.7rem;padding:3px 8px;border-radius:20px;"
-  "background:var(--accent);color:#fff;white-space:nowrap}"
-/* Slots */
-".slots{display:grid;grid-template-columns:1fr 1fr;gap:14px;"
-  "max-width:700px;margin:0 auto 14px}"
-"@media(max-width:480px){.slots{grid-template-columns:1fr}}"
-".card{background:var(--card);border:2px solid var(--border);"
-  "border-radius:16px;padding:16px;transition:border-color .3s}"
-".card.active{border-color:var(--accent)}"
-".card-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}"
-".lbl{font-size:.72rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}"
-".pnum{font-size:1.4rem;font-weight:700;color:var(--accent2)}"
-".portrait{width:100%;aspect-ratio:1;border-radius:10px;margin-bottom:8px;"
-  "display:flex;align-items:center;justify-content:center;font-size:3rem;"
-  "background:linear-gradient(135deg,#1e1e3a,#2d2d5a);"
-  "border:1px solid var(--border);position:relative;overflow:hidden}"
-".ebg{position:absolute;inset:0;opacity:.15;border-radius:10px}"
-".emoji{position:relative;z-index:1}"
-".sname{font-size:.95rem;font-weight:600;text-align:center;margin-bottom:3px}"
-".selem{text-align:center;font-size:.68rem;font-weight:600;text-transform:uppercase;"
-  "letter-spacing:.08em;margin-bottom:8px;padding:2px 8px;border-radius:20px;"
-  "display:inline-block;width:100%}"
-".sfile{font-size:.65rem;color:var(--muted);text-align:center;margin-bottom:10px;"
-  "overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
-".empty{text-align:center;color:var(--muted);padding:14px 0}"
-".empty .eicon{font-size:2.2rem;margin-bottom:5px;opacity:.3}"
-".empty p{font-size:.8rem}"
-/* Select */
-"select{width:100%;padding:8px 10px;background:#1a1a35;"
-  "border:1px solid var(--border);border-radius:8px;color:var(--text);"
-  "font-size:.83rem;margin-bottom:8px;cursor:pointer}"
-"select:focus{outline:none;border-color:var(--accent)}"
-".nofiles{font-size:.78rem;color:var(--muted);text-align:center;padding:7px;"
-  "background:#0f0f20;border-radius:8px;margin-bottom:8px;"
-  "border:1px dashed var(--border)}"
-/* Buttons */
-".btn{width:100%;padding:9px;border:none;border-radius:8px;font-size:.87rem;"
-  "font-weight:600;cursor:pointer;transition:all .2s}"
-".btn-load{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}"
-".btn-load:hover{opacity:.9;transform:translateY(-1px)}"
-".btn-load:disabled{opacity:.4;cursor:not-allowed;transform:none}"
-".btn-dl{background:transparent;border:1px solid #22c55e;"
-  "color:#22c55e;margin-top:7px}"
-".btn-dl:hover{background:#22c55e;color:#000}"
-".btn-ul{background:transparent;border:1px solid var(--border);"
-  "color:var(--muted);margin-top:7px}"
-".btn-ul:hover{border-color:#ef4444;color:#ef4444}"
-/* Upload box */
-".upbox{max-width:700px;margin:0 auto 14px;background:var(--card);"
-  "border:1px dashed var(--border);border-radius:12px;padding:14px;text-align:center}"
-".upicon{font-size:1.8rem;margin-bottom:4px;opacity:.45}"
-".updesc{font-size:.8rem;color:var(--muted);margin-bottom:8px}"
-"input[type=file]{display:none}"
-".upbtn{display:inline-block;padding:7px 18px;background:var(--accent);"
-  "color:#fff;border-radius:8px;font-size:.83rem;font-weight:600;cursor:pointer}"
-".upstat{font-size:.78rem;color:var(--accent2);margin-top:6px;min-height:16px}"
-/* Bottom row */
-".btmrow{max-width:700px;margin:0 auto 14px;display:flex;gap:10px}"
-".btn-sense{flex:1;padding:11px;background:transparent;border:1px solid var(--accent);"
-  "border-radius:10px;color:var(--accent2);font-size:.88rem;font-weight:600;"
-  "cursor:pointer;transition:all .2s}"
-".btn-sense:hover{background:var(--accent);color:#fff}"
-/* Status */
-".sbar{max-width:700px;margin:0 auto;padding:9px 14px;"
-  "background:var(--card);border:1px solid var(--border);"
-  "border-radius:8px;font-size:.78rem;color:var(--muted);"
-  "display:flex;align-items:center;gap:8px}"
-".dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0}"
-".dot.ok{background:#22c55e;box-shadow:0 0 6px #22c55e}"
-".dot.err{background:#ef4444}"
-/* Elements */
-".el-Fire{color:var(--fire)}.el-bg-Fire{background:var(--fire)}"
-".el-Water{color:var(--water)}.el-bg-Water{background:var(--water)}"
-".el-Earth{color:var(--earth)}.el-bg-Earth{background:var(--earth)}"
-".el-Air{color:var(--air)}.el-bg-Air{background:var(--air)}"
-".el-Life{color:var(--life)}.el-bg-Life{background:var(--life)}"
-".el-Undead{color:var(--undead)}.el-bg-Undead{background:var(--undead)}"
-".el-Magic{color:var(--magic)}.el-bg-Magic{background:var(--magic)}"
-".el-Tech{color:var(--tech)}.el-bg-Tech{background:var(--tech)}"
-".el-Light{color:var(--light)}.el-bg-Light{background:var(--light)}"
-".el-Dark{color:var(--dark)}.el-bg-Dark{background:var(--dark)}"
-"</style></head><body>"
-"<h1>&#9670; KAOS Portal</h1>"
-"<p class='sub'>Skylander Portal Manager</p>"
+  "font-family:'Exo 2',system-ui,sans-serif;"
+  "min-height:100vh;padding:20px 16px;"
+  "background-image:radial-gradient(ellipse at 20% 0%,#1a0a3e 0%,transparent 60%),"
+    "radial-gradient(ellipse at 80% 100%,#0a1a3e 0%,transparent 60%)}"
+
+/* Header */
+"header{text-align:center;margin-bottom:24px}"
+"h1{font-family:'Orbitron',monospace;font-size:2rem;letter-spacing:.1em;"
+  "background:linear-gradient(135deg,#a78bfa,#7c3aed,#4f46e5);"
+  "-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;"
+  "margin-bottom:4px}"
+".sub{color:var(--muted);font-size:.8rem;letter-spacing:.05em}"
+
+/* Container */
+".wrap{max-width:680px;margin:0 auto}"
 
 /* Portal type bar */
+".pbar{background:var(--card);border:1px solid var(--border);"
+  "border-radius:14px;padding:14px 16px;margin-bottom:16px;"
+  "display:flex;align-items:center;gap:12px}"
+".pbar-label{font-size:.75rem;color:var(--muted);white-space:nowrap;font-weight:600;letter-spacing:.05em;text-transform:uppercase}"
+"#ptype{flex:1;background:#0a0a20;border:1px solid var(--border);"
+  "border-radius:8px;color:var(--text);padding:8px 12px;"
+  "font-size:.87rem;font-family:'Exo 2',sans-serif;cursor:pointer;outline:none}"
+"#ptype:focus{border-color:var(--accent)}"
+".pbadge{background:var(--accent);color:#fff;font-size:.7rem;"
+  "padding:4px 10px;border-radius:20px;font-weight:600;white-space:nowrap}"
+
+/* Slot grid */
+".slots{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px}"
+"@media(max-width:500px){.slots{grid-template-columns:1fr}}"
+".card{background:var(--card);border:1px solid var(--border);"
+  "border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:10px;"
+  "transition:border-color .3s}"
+".card.loaded{border-color:var(--accent);"
+  "box-shadow:0 0 20px rgba(109,40,217,.15)}"
+".card-hdr{display:flex;justify-content:space-between;align-items:center}"
+".lbl{font-size:.7rem;color:var(--muted);font-weight:600;letter-spacing:.1em;text-transform:uppercase}"
+".pnum{font-family:'Orbitron',monospace;font-size:.8rem;color:var(--accent2)}"
+
+/* Character display */
+".char-info{text-align:center;padding:8px 0}"
+".char-name{font-weight:600;font-size:.95rem;color:var(--bright)}"
+".char-elem{font-size:.72rem;color:var(--muted);margin-top:2px;text-transform:uppercase;letter-spacing:.05em}"
+".char-file{font-size:.65rem;color:var(--muted);margin-top:4px;opacity:.6}"
+".empty-slot{text-align:center;padding:12px 0;color:var(--muted);"
+  "font-size:.8rem;display:flex;flex-direction:column;align-items:center;gap:6px}"
+".empty-slot svg{opacity:.3}"
+
+/* Element colors */
+".el-Fire{color:#f97316}.el-Water{color:#38bdf8}.el-Earth{color:#a3e635}"
+".el-Air{color:#67e8f9}.el-Life{color:#4ade80}.el-Undead{color:#c084fc}"
+".el-Magic{color:#f472b6}.el-Tech{color:#fbbf24}.el-Light{color:#fef08a}"
+".el-Dark{color:#94a3b8}.el-Kaos{color:#f43f5e}"
+
+/* File selector */
+"select.file-sel{width:100%;background:#0a0a20;border:1px solid var(--border);"
+  "border-radius:8px;color:var(--text);padding:8px 10px;"
+  "font-size:.83rem;font-family:'Exo 2',sans-serif;cursor:pointer;outline:none}"
+"select.file-sel:focus{border-color:var(--accent)}"
+
+/* Buttons */
+".btn{width:100%;padding:9px;border-radius:8px;font-size:.83rem;"
+  "font-family:'Exo 2',sans-serif;font-weight:600;cursor:pointer;"
+  "border:none;transition:opacity .2s,transform .1s}"
+".btn:active{transform:scale(.98)}"
+".btn:disabled{opacity:.4;cursor:not-allowed}"
+".btn-load{background:var(--accent);color:#fff}"
+".btn-load:hover:not(:disabled){background:var(--glow)}"
+".btn-unload{background:transparent;border:1px solid var(--border);color:var(--muted)}"
+".btn-unload:hover{border-color:var(--hot);color:var(--hot)}"
+".btn-dl{background:transparent;border:1px solid var(--border);color:var(--muted)}"
+".btn-dl:hover{border-color:var(--accent2);color:var(--accent2)}"
+".btn-del{background:transparent;border:1px solid #374151;color:#6b7280;"
+  "font-size:.75rem;padding:6px}"
+".btn-del:hover{border-color:var(--hot);color:var(--hot)}"
+
+/* Upload box */
+".upbox{background:var(--card);border:1px dashed var(--border);"
+  "border-radius:14px;padding:20px;margin-bottom:14px;text-align:center}"
+".upbox p{color:var(--muted);font-size:.82rem;margin-bottom:12px}"
+".upbtn{display:inline-block;background:var(--accent);color:#fff;"
+  "padding:9px 20px;border-radius:8px;font-size:.85rem;font-weight:600;"
+  "cursor:pointer;transition:background .2s}"
+".upbtn:hover{background:var(--glow)}"
+"#upfile{display:none}"
+"#upstat{margin-top:10px;font-size:.8rem;color:var(--ok);min-height:1em}"
+
+/* Sense + Status */
+".sense-btn{width:100%;max-width:680px;display:block;margin:0 auto 14px;"
+  "background:transparent;border:1px solid var(--border);color:var(--muted);"
+  "padding:11px;border-radius:10px;font-size:.83rem;font-family:'Exo 2',sans-serif;"
+  "font-weight:600;cursor:pointer;transition:all .2s;letter-spacing:.05em}"
+".sense-btn:hover{border-color:var(--accent2);color:var(--accent2)}"
+".status{max-width:680px;margin:0 auto;display:flex;align-items:center;"
+  "gap:8px;padding:10px 14px;background:var(--card);"
+  "border:1px solid var(--border);border-radius:10px;font-size:.8rem}"
+".dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0}"
+".dot.ok{background:var(--ok);box-shadow:0 0 6px var(--ok)}"
+".dot.err{background:var(--hot);box-shadow:0 0 6px var(--hot)}"
+"#stxt{color:var(--muted)}"
+"</style></head><body>"
+"<div class='wrap'>"
+"<header>"
+  "<h1>◆ KAOS Portal</h1>"
+  "<p class='sub'>Skylander Portal Manager</p>"
+"</header>"
+
+/* Portal type */
 "<div class='pbar'>"
-  "<label>Portal type</label>"
+  "<span class='pbar-label'>Portal type</span>"
   "<select id='ptype' onchange='setPortalType(this.value)'>"
     "<option value='3'>Imaginators / SuperChargers</option>"
-    "<option value='1'>Swap Force</option>"
-    "<option value='0'>Spyro's Adventure / Giants</option>"
+    "<option value='1'>Giants / Swap Force</option>"
+    "<option value='0'>Spyro's Adventure</option>"
     "<option value='2'>Trap Team (Traptanium)</option>"
   "</select>"
   "<span class='pbadge' id='pbadge'>Imaginators</span>"
 "</div>"
 
-/* Slot cards */
+/* Slot cards — static structure, JS only updates inner content divs */
 "<div class='slots'>"
-  "<div class='card' id='c0'><div class='card-hdr'>"
-    "<span class='lbl'>Player 1</span><span class='pnum'>P1</span></div>"
-    "<div id='c0-body'></div></div>"
-  "<div class='card' id='c1'><div class='card-hdr'>"
-    "<span class='lbl'>Player 2</span><span class='pnum'>P2</span></div>"
-    "<div id='c1-body'></div></div>"
+  "<div class='card' id='card0'>"
+    "<div class='card-hdr'>"
+      "<span class='lbl'>Player 1</span><span class='pnum'>P1</span>"
+    "</div>"
+    "<div id='info0'></div>"
+    "<select class='file-sel' id='sel0'></select>"
+    "<button class='btn btn-load' id='btnLoad0' onclick='doLoad(0)'>Load</button>"
+    "<div id='extra0'></div>"
+  "</div>"
+  "<div class='card' id='card1'>"
+    "<div class='card-hdr'>"
+      "<span class='lbl'>Player 2</span><span class='pnum'>P2</span>"
+    "</div>"
+    "<div id='info1'></div>"
+    "<select class='file-sel' id='sel1'></select>"
+    "<button class='btn btn-load' id='btnLoad1' onclick='doLoad(1)'>Load</button>"
+    "<div id='extra1'></div>"
+  "</div>"
 "</div>"
 
-/* Upload box */
+/* Upload */
 "<div class='upbox'>"
-  "<div class='upicon'>&#8679;</div>"
-  "<p class='updesc'>Upload a Skylander dump to device flash</p>"
-  "<label>"
-    "<input type='file' id='upfile' accept='.bin,.dmp,.sky,.dump' onchange='uploadFile(this)'>"
-    "<span class='upbtn'>Choose .bin / .dmp / .sky</span>"
+  "<p>Upload a Skylander dump (.bin / .dmp / .sky)</p>"
+  "<label><input type='file' id='upfile' accept='.bin,.dmp,.sky,.dump' onchange='doUpload(this)'>"
+    "<span class='upbtn'>&#8679; Choose file</span>"
   "</label>"
-  "<div class='upstat' id='upstat'></div>"
+  "<div id='upstat'></div>"
 "</div>"
 
-/* Bottom row */
-"<div class='btmrow'>"
-  "<button class='btn-sense' onclick='sense()'>&#8635; Force Sense</button>"
+/* Sense */
+"<button class='sense-btn' onclick='doSense()'>&#8635; Force Sense</button>"
+
+/* Status */
+"<div class='status'><div class='dot' id='dot'></div><span id='stxt'>Connecting...</span></div>"
 "</div>"
-"<div class='sbar'><div class='dot' id='dot'></div><span id='stxt'>Connecting...</span></div>"
 
 "<script>"
-"const EL={'Fire':'🔥','Water':'💧','Earth':'🪨','Air':'🌪️',"
-  "'Life':'🌿','Undead':'💀','Magic':'✨','Tech':'⚙️','Light':'☀️','Dark':'🌑'};"
-"const TN={0:\"Spyro's Adv\",1:'Swap Force',2:'Trap Team',3:'Imaginators'};"
-"let S={files:[],slots:[{loaded:false},{loaded:false}],portal_type:3};"
-"let _ptypeUserSet=false;"
+/* ── Constants ─────────────────────────────────────────── */
+"const EL={"
+  "Fire:'🔥',Water:'💧',Earth:'🌿',Air:'💨',"
+  "Life:'🌱',Undead:'💀',Magic:'✨',Tech:'⚙️',"
+  "Light:'☀️',Dark:'🌑',Kaos:'🔮'"
+"};"
+"const PT={0:\"Spyro's Adv\",1:'Giants/SwapForce',2:'Trap Team',3:'Imaginators'};"
 
-/* fetchState */
-"async function go(){"
-  "try{"
-    "S=await(await fetch('/api/state')).json();"
-    "render();st('Connected',1);"
-    /* Only update dropdown if user hasn't just changed it */
-    "if(!_ptypeUserSet){"
-      "document.getElementById('ptype').value=S.portal_type||3;"
-      "document.getElementById('pbadge').textContent=TN[S.portal_type||3];"
-    "}"
-    "_ptypeUserSet=false;"
-  "}catch(e){st('No connection',0)}"
-"}"
+/* ── State ─────────────────────────────────────────────── */
+/* Single source of truth — never read from DOM to make decisions */
+"let files=[];"          /* string[] — current file list from server */
+"let slots=[{},{} ];"    /* slot state objects from server */
+"let portalType=3;"
+"let ptypeChanging=false;"
 
-/* renderSlots */
-"function render(){"
+/* ── Render ────────────────────────────────────────────── */
+/* Called after every state fetch. Updates DOM to match state.
+ * Selects are ONLY populated once (when files change).
+ * Never destroys interactive elements — only updates their properties. */
+"let lastFileKey='';"
+
+"function renderFiles(){"
+  "const key=files.join('|');"
+  "if(key===lastFileKey)return;"  /* files unchanged — leave selects alone */
+  "lastFileKey=key;"
   "for(let i=0;i<2;i++){"
-    "const s=S.slots[i],el=document.getElementById('c'+i+'-body'),"
-      "card=document.getElementById('c'+i);"
-    "card.classList.toggle('active',s.loaded);"
-    "let h='';"
-    "if(s.loaded){"
-      "const e=s.element||'Magic',em=EL[e]||'✨';"
-      "h+=`<div class='portrait'><div class='ebg el-bg-${e}'></div>`"
-        "+`<div class='emoji'>${em}</div></div>`"
-        "+`<div class='sname'>${s.name||'Unknown'}</div>`"
-        "+`<div class='selem el-${e}'>${e}</div>`"
-        "+`<div class='sfile'>${s.filename||''}</div>`;"
-    "}else{"
-      "h+=`<div class='empty'><div class='eicon'>👻</div><p>No Skylander</p></div>`;"
-    "}"
-    /* dropdown */
-    "if(S.files&&S.files.length){"
-      "h+=`<select id='s${i}'>`+S.files.map(f=>`<option>${f}</option>`).join('')+'</select>';"
-      "h+=`<button class='btn btn-load' onclick='load(${i})'>Load</button>`;"
-      "h+=`<button class='btn btn-del' onclick='delFile(document.getElementById(\"s\"+${i}).value)' style='background:transparent;border:1px solid #ef4444;color:#ef4444;margin-top:7px;width:100%;padding:9px;border-radius:8px;font-size:.87rem;font-weight:600;cursor:pointer'>&#128465; Delete selected</button>`;"
-    "}else{"
-      "h+=`<div class='nofiles'>No files — upload one above</div>`;"
-      "h+=`<button class='btn btn-load' disabled>Load</button>`;"
-    "}"
-    /* download + unload */
-    "if(s.loaded){"
-      "h+=`<button class='btn btn-dl' onclick='dl(${i})'>&#8681; Download save</button>`;"
-      "h+=`<button class='btn btn-ul' onclick='unload(${i})'>Unload</button>`;"
-    "}"
-    "el.innerHTML=h;"
+    "const sel=document.getElementById('sel'+i);"
+    "if(!sel)continue;"
+    "const cur=sel.value;"         /* preserve current selection */
+    "sel.innerHTML=files.map(f=>'<option>'+f+'</option>').join('');"
+    /* restore selection if file still exists */
+    "if(files.includes(cur))sel.value=cur;"
   "}"
 "}"
 
-/* load */
-"async function load(slot){"
-  "const sel=document.getElementById('s'+slot);"
-  "if(!sel)return;st('Loading...',1);"
+"function renderSlot(i){"
+  "const s=slots[i]||{};"
+  "const card=document.getElementById('card'+i);"
+  "const info=document.getElementById('info'+i);"
+  "const btnLoad=document.getElementById('btnLoad'+i);"
+  "const extra=document.getElementById('extra'+i);"
+  "if(!card||!info||!btnLoad||!extra)return;"
+
+  "card.classList.toggle('loaded',!!s.loaded);"
+
+  /* Info panel */
+  "if(s.loaded){"
+    "const e=s.element||'Magic';"
+    "info.innerHTML="
+      "'<div class=\"char-info\">'+"
+      "'<div class=\"char-name\">'+(s.name||'Unknown')+'</div>'+"
+      "'<div class=\"char-elem el-'+e+'\">'+(EL[e]||'')+'  '+e+'</div>'+"
+      "'<div class=\"char-file\">'+(s.filename||'')+'</div>'+"
+      "'</div>';"
+  "}else{"
+    "info.innerHTML="
+      "'<div class=\"empty-slot\">'+"
+      "'<svg width=32 height=32 viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=1.5>'+"
+      "'<circle cx=12 cy=12 r=10/><path d=\"M8 13s1.5 2 4 2 4-2 4-2\"/><line x1=9 y1=9 x2=9.01 y2=9/><line x1=15 y1=9 x2=15.01 y2=9/>'+"
+      "'</svg>No Skylander</div>';"
+  "}"
+
+  /* Load button */
+  "btnLoad.disabled=(files.length===0);"
+
+  /* Extra buttons (download + unload) — only shown when loaded */
+  "if(s.loaded){"
+    "extra.innerHTML="
+      "'<button class=\"btn btn-dl\" onclick=\"doDl('+i+')\">&#8681; Download save</button>'+"
+      "'<button class=\"btn btn-unload\" onclick=\"doUnload('+i+')\">Unload</button>';"
+  "}else{"
+    "extra.innerHTML="
+      "'<button class=\"btn btn-del\" onclick=\"doDelSel('+i+')\">&#128465; Delete selected</button>';"
+  "}"
+"}"
+
+"function renderPortalType(){"
+  "if(ptypeChanging)return;"
+  "const el=document.getElementById('ptype');"
+  "if(el)el.value=portalType;"
+  "const badge=document.getElementById('pbadge');"
+  "if(badge)badge.textContent=PT[portalType]||'';"
+"}"
+
+/* ── Fetch ─────────────────────────────────────────────── */
+"async function poll(){"
   "try{"
-    "const j=await(await fetch('/api/load',{method:'POST',"
+    "const r=await fetch('/api/state');"
+    "if(!r.ok)throw new Error('bad');"
+    "const d=await r.json();"
+    "files=d.files||[];"
+    "slots=d.slots||[{},{}];"
+    "portalType=d.portal_type||3;"
+    "renderFiles();"
+    "renderSlot(0);"
+    "renderSlot(1);"
+    "renderPortalType();"
+    "st('Connected',1);"
+  "}catch(e){st('No connection',0)}"
+"}"
+
+/* ── Actions ───────────────────────────────────────────── */
+"async function doLoad(i){"
+  "const sel=document.getElementById('sel'+i);"
+  "const file=sel?sel.value:'';"
+  "if(!file){st('No file selected',0);return;}"
+  "st('Loading...',1);"
+  "try{"
+    "const r=await fetch('/api/load',{method:'POST',"
       "headers:{'Content-Type':'application/json'},"
-      "body:JSON.stringify({slot,file:sel.value})})).json();"
-    "if(j.ok){await go();st('Loaded',1);}else st('Failed: '+(j.error||'?'),0);"
+      "body:JSON.stringify({slot:i,file})});"
+    "const d=await r.json();"
+    "if(d.ok){await poll();st('Loaded: '+file,1);}else st('Failed: '+(d.error||'?'),0);"
   "}catch(e){st('Error',0)}"
 "}"
 
-/* unload */
-"async function unload(slot){"
+"async function doUnload(i){"
   "st('Unloading...',1);"
-  "await fetch('/api/unload',{method:'POST',"
-    "headers:{'Content-Type':'application/json'},body:JSON.stringify({slot})});"
-  "await go();st('Unloaded',1);"
+  "try{"
+    "await fetch('/api/unload',{method:'POST',"
+      "headers:{'Content-Type':'application/json'},body:JSON.stringify({slot:i})});"
+    "await poll();st('Unloaded',1);"
+  "}catch(e){st('Error',0)}"
 "}"
 
-/* download */
-"function dl(slot){window.location='/api/download?slot='+slot;}"
+"async function doDl(i){"
+  "window.location='/api/download?slot='+i;"
+"}"
 
-/* upload */
-"async function uploadFile(inp){"
+"async function doDelSel(i){"
+  "const sel=document.getElementById('sel'+i);"
+  "const file=sel?sel.value:'';"
+  "if(!file||!confirm('Delete '+file+'?'))return;"
+  "st('Deleting...',1);"
+  "try{"
+    "const r=await fetch('/api/delete',{method:'POST',"
+      "headers:{'Content-Type':'application/json'},body:JSON.stringify({file})});"
+    "const d=await r.json();"
+    "if(d.ok){lastFileKey='';await poll();st('Deleted',1);}else st('Delete failed',0);"
+  "}catch(e){st('Error',0)}"
+"}"
+
+"async function doUpload(inp){"
   "const f=inp.files[0];if(!f)return;"
   "const stat=document.getElementById('upstat');"
-  "stat.textContent='Uploading '+f.name+'...';"
+  "stat.style.color='#94a3b8';stat.textContent='Uploading...';"
   "const fd=new FormData();fd.append('file',f);"
   "try{"
-    "const j=await(await fetch('/api/upload',{method:'POST',body:fd})).json();"
-    "if(j.ok){stat.textContent='✓ '+f.name+' saved';await go();}"
-    "else stat.textContent='✗ '+(j.error||'Upload failed');"
-  "}catch(e){stat.textContent='✗ Error'}"
+    "const r=await fetch('/api/upload',{method:'POST',body:fd});"
+    "const d=await r.json();"
+    "if(d.ok){"
+      "stat.style.color='var(--ok)';stat.textContent='✓ '+f.name+' saved';"
+      "lastFileKey='';await poll();"
+    "}else{"
+      "stat.style.color='var(--hot)';stat.textContent='✗ '+(d.error||'Upload failed');"
+    "}"
+  "}catch(e){stat.style.color='var(--hot)';stat.textContent='✗ Error';}"
   "inp.value='';"
 "}"
 
-"async function delFile(f){"
-  "if(!f||!confirm('Delete '+f+'?'))return;"
-  "st('Deleting...',1);"
+"async function doSense(){"
   "try{"
-    "const j=await(await fetch('/api/delete',{method:'POST',"
-      "headers:{'Content-Type':'application/json'},body:JSON.stringify({file:f})})).json();"
-    "if(j.ok){st('Deleted',1);await go();}else st('Delete failed',0);"
+    "await fetch('/api/sense',{method:'POST'});"
+    "st('Sense triggered',1);"
   "}catch(e){st('Error',0)}"
 "}"
 
-/* sense */
-"async function sense(){"
-  "await fetch('/api/sense',{method:'POST'});st('Sense sent',1);"
-"}"
-
-/* portal type */
 "async function setPortalType(v){"
-  "_ptypeUserSet=true;"
-  "document.getElementById('pbadge').textContent=TN[parseInt(v)];"
-  "await fetch('/api/portaltype',{method:'POST',"
-    "headers:{'Content-Type':'application/json'},body:JSON.stringify({type:parseInt(v)})});"
-  "st('Portal type saved — unplug & replug Pico to apply',1);"
+  "ptypeChanging=true;"
+  "const badge=document.getElementById('pbadge');"
+  "if(badge)badge.textContent=PT[parseInt(v)]||'';"
+  "try{"
+    "await fetch('/api/portaltype',{method:'POST',"
+      "headers:{'Content-Type':'application/json'},body:JSON.stringify({type:parseInt(v)})});"
+    "st('Portal type saved — unplug & replug Pico',1);"
+  "}catch(e){st('Error',0)}"
+  "setTimeout(()=>ptypeChanging=false,5000);"
 "}"
 
 "function st(m,ok){"
@@ -338,7 +422,8 @@ static const char HTML_PAGE[] =
   "document.getElementById('dot').className='dot '+(ok?'ok':'err');"
 "}"
 
-"go();setInterval(go,4000);"
+/* ── Boot ──────────────────────────────────────────────── */
+"poll();setInterval(poll,5000);"
 "</script></body></html>";
 
 /* -----------------------------------------------------------------------
@@ -370,7 +455,7 @@ static esp_err_t handle_root(httpd_req_t *req) {
  * GET /api/state
  * ----------------------------------------------------------------------- */
 static esp_err_t handle_state(httpd_req_t *req) {
-    char buf[2048];
+    char buf[4096];  /* Increased from 2048 to handle many files */
     int n = 0;
 
     n += snprintf(buf+n, sizeof(buf)-n, "{\"files\":[");
@@ -456,6 +541,12 @@ static esp_err_t handle_load(httpd_req_t *req) {
     }
 
     xSemaphoreTake(g_sky_mutex, portMAX_DELAY);
+    /* If slot is already loaded, unload it first so the game sees a clean
+     * removal before the new figure arrives — prevents figure index confusion */
+    if (g_skylanders[slot].loaded) {
+        pico_bridge_unload((uint8_t)slot);
+        vTaskDelay(pdMS_TO_TICKS(200)); /* give game time to process removal */
+    }
     bool ok = skylander_load((uint8_t)slot, full);
     if (ok && got_raw) {
         ESP_LOGI(TAG, "Pushing slot %d to Pico", slot);

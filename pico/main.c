@@ -178,6 +178,9 @@ static void pico_debug(const char *msg) {
     uart_write_blocking(KAOS_UART, frame, n);
 }
 
+/* Write debounce — updated by handle_command (core 0), read by main loop (core 0) */
+static volatile uint32_t g_last_write_ms[MAX_SLOTS] = {0};
+
 /* -----------------------------------------------------------------------
  * Handle incoming HID command (from SET_REPORT or interrupt OUT)
  * Builds a response and pushes it to the queue, or returns false
@@ -242,52 +245,49 @@ static void handle_command(const uint8_t *cmd) {
         break;
 
     case 'Q':
-        /* Query (read block)
-         * Command:  Q [0x10+slot] [block]
-         * Response: Q [0x10+slot] [block] [16 bytes data]   (success)
-         *           Q [0x01]      [block]                   (error)
-         */
         {
             uint8_t raw_idx = cmd[1];
             uint8_t slot    = (raw_idx >= 0x10) ? (raw_idx - 0x10) : raw_idx;
             uint8_t blk     = cmd[2];
+            /* Debug first block query per figure */
+            if (blk == 0) {
+                char d[12] = "Q:0x";
+                d[4] = "0123456789ABCDEF"[raw_idx>>4];
+                d[5] = "0123456789ABCDEF"[raw_idx&0xF];
+                d[6] = '>'; d[7] = 's'; d[8] = '0'+slot; d[9] = '\0';
+                pico_debug(d);
+            }
             resp[0] = 'Q';
             resp[2] = blk;
             uint32_t save = spin_lock_blocking(s_slot_lock);
             uint8_t *bd   = slots_get_block(slot, blk);
             if (bd) {
-                resp[1] = 0x10 + slot;   /* success: echo index */
+                resp[1] = 0x10 + slot;
                 memcpy(&resp[3], bd, 16);
             } else {
-                resp[1] = 0x01;          /* error */
+                resp[1] = 0x01;
             }
             spin_unlock(s_slot_lock, save);
         }
         break;
 
     case 'W':
-        /* Write block */
         {
             uint8_t raw_idx = cmd[1];
             uint8_t slot    = (raw_idx >= 0x10) ? (raw_idx - 0x10) : raw_idx;
             uint8_t blk     = cmd[2];
             resp[0] = 'W';
-            resp[1] = 0x00;   /* always 0 in write response */
-            resp[2] = blk;    /* echo block number */
+            resp[1] = 0x00;
+            resp[2] = blk;
 
             uint32_t save = spin_lock_blocking(s_slot_lock);
             slots_write_block(slot, blk, &cmd[3]);
-            /* Trigger write-back on every write — the ESP32 will save the
-             * updated encrypted dump to SPIFFS each time */
-            static uint8_t wb_buf[1 + SKYLANDER_DUMP_SIZE];
-            wb_buf[0] = slot;
-            memcpy(wb_buf + 1, g_slots[slot].data, SKYLANDER_DUMP_SIZE);
+            /* Mark dirty + record timestamp — write-back fires after idle period */
+            g_slots[slot].dirty = true;
             spin_unlock(s_slot_lock, save);
 
-            /* Send write-back to ESP32 */
-            static uint8_t frame[SKYLANDER_DUMP_SIZE + 8];
-            int n = kaos_build_frame(frame, MSG_WRITE_BACK, wb_buf, 1 + SKYLANDER_DUMP_SIZE);
-            uart_write_blocking(KAOS_UART, frame, n);
+            /* Record last write time for this slot (used by main loop debounce) */
+            g_last_write_ms[slot] = to_ms_since_boot(get_absolute_time());
         }
         break;
 
@@ -352,6 +352,7 @@ static void uart_send(kaos_msg_t type, const uint8_t *payload, uint16_t len) {
 static volatile bool     g_type_pending   = false;
 static volatile uint8_t  g_pending_type   = 3;
 
+
 static void core1_uart_rx(void) {
     kaos_parser_t parser;
     kaos_parser_init(&parser);
@@ -368,26 +369,58 @@ static void core1_uart_rx(void) {
         case MSG_LOAD:
             if (len >= 1 + SKYLANDER_DUMP_SIZE) {
                 uint8_t slot = payload[0];
+
+                /* If slot was already loaded, send removal first so game
+                 * properly unregisters the old figure before we send arrival */
                 uint32_t save = spin_lock_blocking(s_slot_lock);
+                bool was_loaded = g_slots[slot].loaded;
+                spin_unlock(s_slot_lock, save);
+
+                if (was_loaded) {
+                    /* Build remaining bits without this slot */
+                    uint32_t remaining = 0;
+                    uint32_t s3 = spin_lock_blocking(s_slot_lock);
+                    for (int si = 0; si < MAX_SLOTS; si++) {
+                        if (si != slot && g_slots[si].loaded && g_slots[si].active)
+                            remaining |= (0x1u << (si * 2));
+                    }
+                    spin_unlock(s_slot_lock, s3);
+
+                    uint8_t rem_pkt[REPORT_LEN];
+                    /* Removal packet */
+                    memset(rem_pkt, 0, REPORT_LEN);
+                    rem_pkt[0] = 'S';
+                    uint32_t removal_bits = remaining | (0x2u << (slot * 2));
+                    rem_pkt[1] = (removal_bits >> 0) & 0xFF;
+                    rem_pkt[2] = (removal_bits >> 8) & 0xFF;
+                    rem_pkt[6] = 0x01;
+                    q_push(rem_pkt);
+                    /* Absent packet */
+                    memset(rem_pkt, 0, REPORT_LEN);
+                    rem_pkt[0] = 'S';
+                    rem_pkt[1] = (remaining >> 0) & 0xFF;
+                    rem_pkt[2] = (remaining >> 8) & 0xFF;
+                    rem_pkt[6] = 0x01;
+                    q_push(rem_pkt);
+                    q_push(rem_pkt);
+                    /* Small delay so game processes removal before arrival */
+                    sleep_ms(200);
+                }
+
+                save = spin_lock_blocking(s_slot_lock);
                 slots_load(slot, payload + 1);
                 spin_unlock(s_slot_lock, save);
 
-                /* Debug: confirm load received */
-                char dbg[24];
-                dbg[0]='L'; dbg[1]='D'; dbg[2]='='; dbg[3]='0'+slot;
-                dbg[4]=','; dbg[5]='U'; dbg[6]='I'; dbg[7]='D';
-                dbg[8]=':';
-                /* show first byte of UID */
-                uint8_t u = payload[1]; /* block 0 byte 0 = UID[0] */
-                dbg[9]  = "0123456789ABCDEF"[u>>4];
-                dbg[10] = "0123456789ABCDEF"[u&0xF];
-                dbg[11] = '\0';
+                char dbg[16] = "LOAD:s";
+                dbg[6] = '0' + slot;
+                dbg[7] = ',';
+                uint8_t u = payload[1];
+                dbg[8]  = "0123456789ABCDEF"[u>>4];
+                dbg[9]  = "0123456789ABCDEF"[u&0xF];
+                dbg[10] = '\0';
                 pico_debug(dbg);
 
-                /* Push arrival status packets.
-                 * Must include ALL currently loaded slots in each packet,
-                 * not just the new one — otherwise the game thinks other
-                 * figures disappeared when the new one arrived. */
+                /* Build arrival packets including all loaded slots */
                 uint32_t all_present = 0;
                 uint32_t save2 = spin_lock_blocking(s_slot_lock);
                 for (int si = 0; si < MAX_SLOTS; si++) {
@@ -396,12 +429,10 @@ static void core1_uart_rx(void) {
                 }
                 spin_unlock(s_slot_lock, save2);
 
-                /* New slot gets arrival bits (11), others stay present (01) */
-                uint32_t arrival_bits = all_present | (0x2u << (slot * 2)); /* set upper bit = 11 */
+                uint32_t arrival_bits = all_present | (0x2u << (slot * 2));
                 uint32_t present_bits = all_present;
 
                 uint8_t pkt[REPORT_LEN];
-                /* One arrival packet, then steady-state present packets */
                 memset(pkt, 0, REPORT_LEN);
                 pkt[0] = 'S';
                 pkt[1] = (arrival_bits >> 0) & 0xFF;
@@ -412,7 +443,6 @@ static void core1_uart_rx(void) {
                 pkt[6] = 0x01;
                 q_push(pkt);
 
-                /* Follow with present-only packets */
                 for (int i = 0; i < 3; i++) {
                     memset(pkt, 0, REPORT_LEN);
                     pkt[0] = 'S';
@@ -437,7 +467,16 @@ static void core1_uart_rx(void) {
             }
             break;
 
-        case MSG_SET_PORTAL_TYPE:
+        case MSG_ESP_READY:
+            /* ESP32 just booted — unload all slots and re-announce ourselves */
+            {
+                uint32_t save = spin_lock_blocking(s_slot_lock);
+                for (int si = 0; si < MAX_SLOTS; si++) slots_unload(si);
+                spin_unlock(s_slot_lock, save);
+            }
+            uart_send(MSG_PICO_READY, NULL, 0);
+            pico_debug("ESP_READY:ack");
+            break;
             if (len >= 1 && payload[0] != g_portal_type && payload[0] <= 3) {
                 g_pending_type = payload[0];
                 g_type_pending = true;
@@ -491,6 +530,33 @@ int main(void) {
 
     while (true) {
         tud_task();
+
+        /* Write-back debounce — send once after 500ms of write inactivity */
+        {
+            uint32_t now = to_ms_since_boot(get_absolute_time());
+            for (int si = 0; si < MAX_SLOTS; si++) {
+                uint32_t save = spin_lock_blocking(s_slot_lock);
+                bool dirty = g_slots[si].dirty;
+                uint32_t last = g_last_write_ms[si];
+                spin_unlock(s_slot_lock, save);
+
+                if (dirty && last > 0 && (now - last) >= 500) {
+                    /* Game stopped writing — send write-back now */
+                    static uint8_t wb_buf[1 + SKYLANDER_DUMP_SIZE];
+                    wb_buf[0] = si;
+                    uint32_t s2 = spin_lock_blocking(s_slot_lock);
+                    memcpy(wb_buf + 1, g_slots[si].data, SKYLANDER_DUMP_SIZE);
+                    g_slots[si].dirty = false;
+                    spin_unlock(s_slot_lock, s2);
+
+                    static uint8_t frame[SKYLANDER_DUMP_SIZE + 8];
+                    int n = kaos_build_frame(frame, MSG_WRITE_BACK, wb_buf,
+                                             1 + SKYLANDER_DUMP_SIZE);
+                    uart_write_blocking(KAOS_UART, frame, n);
+                    pico_debug("WB:done");
+                }
+            }
+        }
 
         /* Portal type change — save and reboot */
         if (g_type_pending) {
