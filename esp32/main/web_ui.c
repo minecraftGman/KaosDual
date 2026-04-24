@@ -541,6 +541,12 @@ static esp_err_t handle_load(httpd_req_t *req) {
     }
 
     xSemaphoreTake(g_sky_mutex, portMAX_DELAY);
+    /* If slot is already loaded, unload it first so the game sees a clean
+     * removal before the new figure arrives — prevents figure index confusion */
+    if (g_skylanders[slot].loaded) {
+        pico_bridge_unload((uint8_t)slot);
+        vTaskDelay(pdMS_TO_TICKS(200)); /* give game time to process removal */
+    }
     bool ok = skylander_load((uint8_t)slot, full);
     if (ok && got_raw) {
         ESP_LOGI(TAG, "Pushing slot %d to Pico", slot);

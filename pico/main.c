@@ -242,24 +242,27 @@ static void handle_command(const uint8_t *cmd) {
         break;
 
     case 'Q':
-        /* Query (read block)
-         * Command:  Q [0x10+slot] [block]
-         * Response: Q [0x10+slot] [block] [16 bytes data]   (success)
-         *           Q [0x01]      [block]                   (error)
-         */
         {
             uint8_t raw_idx = cmd[1];
             uint8_t slot    = (raw_idx >= 0x10) ? (raw_idx - 0x10) : raw_idx;
             uint8_t blk     = cmd[2];
+            /* Debug first block query per figure */
+            if (blk == 0) {
+                char d[12] = "Q:0x";
+                d[4] = "0123456789ABCDEF"[raw_idx>>4];
+                d[5] = "0123456789ABCDEF"[raw_idx&0xF];
+                d[6] = '>'; d[7] = 's'; d[8] = '0'+slot; d[9] = '\0';
+                pico_debug(d);
+            }
             resp[0] = 'Q';
             resp[2] = blk;
             uint32_t save = spin_lock_blocking(s_slot_lock);
             uint8_t *bd   = slots_get_block(slot, blk);
             if (bd) {
-                resp[1] = 0x10 + slot;   /* success: echo index */
+                resp[1] = 0x10 + slot;
                 memcpy(&resp[3], bd, 16);
             } else {
-                resp[1] = 0x01;          /* error */
+                resp[1] = 0x01;
             }
             spin_unlock(s_slot_lock, save);
         }
@@ -372,16 +375,13 @@ static void core1_uart_rx(void) {
                 slots_load(slot, payload + 1);
                 spin_unlock(s_slot_lock, save);
 
-                /* Debug: confirm load received */
-                char dbg[24];
-                dbg[0]='L'; dbg[1]='D'; dbg[2]='='; dbg[3]='0'+slot;
-                dbg[4]=','; dbg[5]='U'; dbg[6]='I'; dbg[7]='D';
-                dbg[8]=':';
-                /* show first byte of UID */
-                uint8_t u = payload[1]; /* block 0 byte 0 = UID[0] */
-                dbg[9]  = "0123456789ABCDEF"[u>>4];
-                dbg[10] = "0123456789ABCDEF"[u&0xF];
-                dbg[11] = '\0';
+                char dbg[16] = "LOAD:s";
+                dbg[6] = '0' + slot;
+                dbg[7] = ',';
+                uint8_t u = payload[1];
+                dbg[8]  = "0123456789ABCDEF"[u>>4];
+                dbg[9]  = "0123456789ABCDEF"[u&0xF];
+                dbg[10] = '\0';
                 pico_debug(dbg);
 
                 /* Push arrival status packets.
