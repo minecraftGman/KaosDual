@@ -187,17 +187,7 @@ static const char HTML_PAGE[] =
   "<p class='sub'>Skylander Portal Manager</p>"
 "</header>"
 
-/* Portal type */
-"<div class='pbar'>"
-  "<span class='pbar-label'>Portal type</span>"
-  "<select id='ptype' onchange='setPortalType(this.value)'>"
-    "<option value='3'>Imaginators / SuperChargers</option>"
-    "<option value='1'>Giants / Swap Force</option>"
-    "<option value='0'>Spyro's Adventure</option>"
-    "<option value='2'>Trap Team (Traptanium)</option>"
-  "</select>"
-  "<span class='pbadge' id='pbadge'>Imaginators</span>"
-"</div>"
+/* Portal type bar removed — Traptanium is hardcoded (works with all games) */
 
 /* Slot cards — static structure, JS only updates inner content divs */
 "<div class='slots'>"
@@ -250,8 +240,7 @@ static const char HTML_PAGE[] =
 /* Single source of truth — never read from DOM to make decisions */
 "let files=[];"          /* string[] — current file list from server */
 "let slots=[{},{} ];"    /* slot state objects from server */
-"let portalType=3;"
-"let ptypeChanging=false;"
+/* Portal type state removed — hardcoded Traptanium */
 
 /* ── Render ────────────────────────────────────────────── */
 /* Called after every state fetch. Updates DOM to match state.
@@ -314,13 +303,7 @@ static const char HTML_PAGE[] =
   "}"
 "}"
 
-"function renderPortalType(){"
-  "if(ptypeChanging)return;"
-  "const el=document.getElementById('ptype');"
-  "if(el)el.value=portalType;"
-  "const badge=document.getElementById('pbadge');"
-  "if(badge)badge.textContent=PT[portalType]||'';"
-"}"
+/* renderPortalType / setPortalType removed — Traptanium hardcoded */
 
 /* ── Fetch ─────────────────────────────────────────────── */
 "async function poll(){"
@@ -330,11 +313,9 @@ static const char HTML_PAGE[] =
     "const d=await r.json();"
     "files=d.files||[];"
     "slots=d.slots||[{},{}];"
-    "portalType=d.portal_type||3;"
     "renderFiles();"
     "renderSlot(0);"
     "renderSlot(1);"
-    "renderPortalType();"
     "st('Connected',1);"
   "}catch(e){st('No connection',0)}"
 "}"
@@ -405,17 +386,7 @@ static const char HTML_PAGE[] =
   "}catch(e){st('Error',0)}"
 "}"
 
-"async function setPortalType(v){"
-  "ptypeChanging=true;"
-  "const badge=document.getElementById('pbadge');"
-  "if(badge)badge.textContent=PT[parseInt(v)]||'';"
-  "try{"
-    "await fetch('/api/portaltype',{method:'POST',"
-      "headers:{'Content-Type':'application/json'},body:JSON.stringify({type:parseInt(v)})});"
-    "st('Portal type saved — unplug & replug Pico',1);"
-  "}catch(e){st('Error',0)}"
-  "setTimeout(()=>ptypeChanging=false,5000);"
-"}"
+"async function setPortalType(v){/* removed - Traptanium hardcoded */}"
 
 "function st(m,ok){"
   "document.getElementById('stxt').textContent=m;"

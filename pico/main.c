@@ -202,30 +202,13 @@ static void handle_command(const uint8_t *cmd) {
 
     case 'R':
         /* Ready — identifies portal type to game.
-         * Exact IDs from Texthead1/Skylanders-Portal-IDs:
-         *   SSA PS3/Wii wireless dongle: 0x90 0x00  (wireless receiver)
-         *   Giants wired:                0x01 0x3D
-         *   Swap Force:                  0x02 0x03
-         *   Traptanium (Trap Team):      0x02 0x18
-         *   Imaginators:                 0x02 0x0A 0x05 0x08
+         * Traptanium portal (Trap Team) is universal — works with ALL games.
+         * Hardcoded to Traptanium ID: 0x02 0x18
          */
         g_portal_active = true;
         resp[0] = 'R';
-        switch (g_portal_type) {
-            case 0:  /* SSA — wireless dongle ID */
-                resp[1]=0x90; resp[2]=0x00;
-                break;
-            case 1:  /* Giants / Swap Force */
-                resp[1]=0x01; resp[2]=0x3D;
-                break;
-            case 2:  /* Trap Team */
-                resp[1]=0x02; resp[2]=0x18;
-                break;
-            case 3:  /* Imaginators (default) */
-            default:
-                resp[1]=0x02; resp[2]=0x0A; resp[3]=0x05; resp[4]=0x08;
-                break;
-        }
+        resp[1] = 0x02;
+        resp[2] = 0x18;
         break;
 
     case 'A':
