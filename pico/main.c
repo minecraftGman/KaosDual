@@ -245,27 +245,35 @@ static void handle_command(const uint8_t *cmd) {
     case 'Q':
         {
             uint8_t raw_idx = cmd[1];
-            uint8_t slot    = (raw_idx >= 0x10) ? (raw_idx - 0x10) : raw_idx;
             uint8_t blk     = cmd[2];
-            /* Debug first block query per figure */
+            /* Slot mapping:
+             * Older games (Imaginators etc): 0x10=slot0, 0x11=slot1
+             * Trap Team PS3:                 0x20=slot0, 0x21=slot1
+             * Accept both — map to internal slot 0/1 */
+            uint8_t slot;
+            if      (raw_idx >= 0x20) slot = raw_idx - 0x20;
+            else if (raw_idx >= 0x10) slot = raw_idx - 0x10;
+            else                      slot = raw_idx;
+
             if (blk == 0) {
                 char d[12] = "Q:0x";
                 d[4] = "0123456789ABCDEF"[raw_idx>>4];
                 d[5] = "0123456789ABCDEF"[raw_idx&0xF];
-                d[6] = '>'; d[7] = 's'; d[8] = '0'+slot; d[9] = '\0';
+                d[6] = '>'; d[7] = 's';
+                d[8] = slot < 10 ? '0'+slot : 'A'+(slot-10);
+                d[9] = '\0';
                 pico_debug(d);
-                /* Game queried figure — clear arrival so status drops to 01 (present) */
                 if (slot < MAX_SLOTS) g_arrival_pending[slot] = false;
             }
             resp[0] = 'Q';
             resp[2] = blk;
             uint32_t save = spin_lock_blocking(s_slot_lock);
             uint8_t *bd   = slots_get_block(slot, blk);
-            if (bd) {
-                resp[1] = 0x10 + slot;
+            if (bd && slot < MAX_SLOTS) {
+                resp[1] = raw_idx;   /* echo back the exact index game sent */
                 memcpy(&resp[3], bd, 16);
             } else {
-                resp[1] = 0x01;
+                resp[1] = 0x01;      /* error */
             }
             spin_unlock(s_slot_lock, save);
         }
@@ -274,20 +282,23 @@ static void handle_command(const uint8_t *cmd) {
     case 'W':
         {
             uint8_t raw_idx = cmd[1];
-            uint8_t slot    = (raw_idx >= 0x10) ? (raw_idx - 0x10) : raw_idx;
             uint8_t blk     = cmd[2];
+            uint8_t slot;
+            if      (raw_idx >= 0x20) slot = raw_idx - 0x20;
+            else if (raw_idx >= 0x10) slot = raw_idx - 0x10;
+            else                      slot = raw_idx;
+
             resp[0] = 'W';
             resp[1] = 0x00;
             resp[2] = blk;
 
-            uint32_t save = spin_lock_blocking(s_slot_lock);
-            slots_write_block(slot, blk, &cmd[3]);
-            /* Mark dirty + record timestamp — write-back fires after idle period */
-            g_slots[slot].dirty = true;
-            spin_unlock(s_slot_lock, save);
-
-            /* Record last write time for this slot (used by main loop debounce) */
-            g_last_write_ms[slot] = to_ms_since_boot(get_absolute_time());
+            if (slot < MAX_SLOTS) {
+                uint32_t save = spin_lock_blocking(s_slot_lock);
+                slots_write_block(slot, blk, &cmd[3]);
+                g_slots[slot].dirty = true;
+                spin_unlock(s_slot_lock, save);
+                g_last_write_ms[slot] = to_ms_since_boot(get_absolute_time());
+            }
         }
         break;
 
