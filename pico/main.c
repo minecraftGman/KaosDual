@@ -202,20 +202,18 @@ static void handle_command(const uint8_t *cmd) {
 
     case 'R':
         /* Ready — identifies portal type to game.
-         * Exact IDs from Texthead1/Skylanders-Portal-IDs (verified against FCC):
-         *   SSA PS3/Wii wireless: 0x01 0x29
-         *   Giants PS3/Wii:       0x01 0x3D
-         *   Swap Force:           0x02 0x03
-         *   Traptanium (TT):      0x02 0x18
-         *   Imaginators:          0x02 0x0A 0x05 0x08
-         * Newer portals are backwards compatible so Imaginators ID works for all
-         * older games too — but SSA specifically checks for its own ID.
+         * Exact IDs from Texthead1/Skylanders-Portal-IDs:
+         *   SSA PS3/Wii wireless dongle: 0x90 0x00  (wireless receiver)
+         *   Giants wired:                0x01 0x3D
+         *   Swap Force:                  0x02 0x03
+         *   Traptanium (Trap Team):      0x02 0x18
+         *   Imaginators:                 0x02 0x0A 0x05 0x08
          */
         g_portal_active = true;
         resp[0] = 'R';
         switch (g_portal_type) {
-            case 0:  /* SSA */
-                resp[1]=0x01; resp[2]=0x29;
+            case 0:  /* SSA — wireless dongle ID */
+                resp[1]=0x90; resp[2]=0x00;
                 break;
             case 1:  /* Giants / Swap Force */
                 resp[1]=0x01; resp[2]=0x3D;
@@ -231,12 +229,15 @@ static void handle_command(const uint8_t *cmd) {
         break;
 
     case 'A':
-        /* Activate / deactivate */
+        /* Activate/deactivate portal.
+         * Wired portal:   {A, activation, 0xFF, 0x77}
+         * Wireless portal: {A, activation, 0xFF, 0x00}  ← PS3 uses wireless
+         * We use wireless format since we emulate the wireless dongle for PS3. */
         g_portal_active = (cmd[1] == 0x01);
-        resp[0] = 0x41;      /* 'A' */
-        resp[1] = cmd[1];
-        resp[2] = 0xFF;
-        resp[3] = 0x77;
+        resp[0] = 0x41;   /* 'A' */
+        resp[1] = cmd[1]; /* echo activation byte */
+        resp[2] = 0xFF;   /* battery/status byte */
+        resp[3] = 0x00;   /* 0x00 for wireless, 0x77 for wired */
         break;
 
     case 'S':
@@ -579,14 +580,14 @@ int main(void) {
                 sent = true;
             }
 
-            /* Send periodic status when portal is active and queue is empty */
-            if (!sent && g_portal_active) {
-                uint32_t now = to_ms_since_boot(get_absolute_time());
-                if (now - last_status_ms >= 20) {  /* 50 Hz, matching real portal */
-                    build_status(resp);
-                    tud_hid_report(0, resp, REPORT_LEN);
-                    last_status_ms = now;
-                }
+            uint32_t now = to_ms_since_boot(get_absolute_time());
+            if (!sent && (now - last_status_ms >= 20)) {
+                /* Always send S status at 50Hz regardless of portal active state.
+                 * The game relies on constant status packets from the moment of
+                 * USB connection — stopping them confuses the portal detection. */
+                build_status(resp);
+                tud_hid_report(0, resp, REPORT_LEN);
+                last_status_ms = now;
             }
         }
     }
