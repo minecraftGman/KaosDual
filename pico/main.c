@@ -354,6 +354,13 @@ static void core1_uart_rx(void) {
 
                 uint32_t save = spin_lock_blocking(s_slot_lock);
                 slots_load(slot, payload + 1);
+                /* Force arrival detection — reset was_loaded so build_status
+                 * always sees a fresh arrival even on rapid unload→load swaps */
+                if (slot < MAX_SLOTS) {
+                    g_was_loaded[slot]      = false;
+                    g_arrival_pending[slot] = false;
+                    g_removal_pending[slot] = false;
+                }
                 spin_unlock(s_slot_lock, save);
 
                 char dbg[16] = "LOAD:s";
@@ -374,8 +381,12 @@ static void core1_uart_rx(void) {
                 uint8_t slot = payload[0];
                 uint32_t save = spin_lock_blocking(s_slot_lock);
                 slots_unload(slot);
+                if (slot < MAX_SLOTS) {
+                    g_arrival_pending[slot] = false;
+                    g_removal_pending[slot] = false;
+                    /* leave g_was_loaded as-is — build_status will detect removal naturally */
+                }
                 spin_unlock(s_slot_lock, save);
-                if (slot < MAX_SLOTS) g_arrival_pending[slot] = false;
             }
             break;
 
