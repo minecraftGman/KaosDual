@@ -373,45 +373,9 @@ static void core1_uart_rx(void) {
             if (len >= 1 + SKYLANDER_DUMP_SIZE) {
                 uint8_t slot = payload[0];
 
-                /* If slot was already loaded, send removal first so game
-                 * properly unregisters the old figure before we send arrival */
                 uint32_t save = spin_lock_blocking(s_slot_lock);
-                bool was_loaded = g_slots[slot].loaded;
-                spin_unlock(s_slot_lock, save);
-
-                if (was_loaded) {
-                    /* Build remaining bits without this slot */
-                    uint32_t remaining = 0;
-                    uint32_t s3 = spin_lock_blocking(s_slot_lock);
-                    for (int si = 0; si < MAX_SLOTS; si++) {
-                        if (si != slot && g_slots[si].loaded && g_slots[si].active)
-                            remaining |= (0x1u << (si * 2));
-                    }
-                    spin_unlock(s_slot_lock, s3);
-
-                    uint8_t rem_pkt[REPORT_LEN];
-                    /* Removal packet */
-                    memset(rem_pkt, 0, REPORT_LEN);
-                    rem_pkt[0] = 'S';
-                    uint32_t removal_bits = remaining | (0x2u << (slot * 2));
-                    rem_pkt[1] = (removal_bits >> 0) & 0xFF;
-                    rem_pkt[2] = (removal_bits >> 8) & 0xFF;
-                    rem_pkt[6] = 0x01;
-                    q_push(rem_pkt);
-                    /* Absent packet */
-                    memset(rem_pkt, 0, REPORT_LEN);
-                    rem_pkt[0] = 'S';
-                    rem_pkt[1] = (remaining >> 0) & 0xFF;
-                    rem_pkt[2] = (remaining >> 8) & 0xFF;
-                    rem_pkt[6] = 0x01;
-                    q_push(rem_pkt);
-                    q_push(rem_pkt);
-                    /* Small delay so game processes removal before arrival */
-                    sleep_ms(200);
-                }
-
-                save = spin_lock_blocking(s_slot_lock);
                 slots_load(slot, payload + 1);
+                g_arrival_acked[slot] = false;  /* trigger persistent arrival in build_status */
                 spin_unlock(s_slot_lock, save);
 
                 char dbg[16] = "LOAD:s";
@@ -422,41 +386,6 @@ static void core1_uart_rx(void) {
                 dbg[9]  = "0123456789ABCDEF"[u&0xF];
                 dbg[10] = '\0';
                 pico_debug(dbg);
-
-                /* Build arrival packets including all loaded slots */
-                uint32_t all_present = 0;
-                uint32_t save2 = spin_lock_blocking(s_slot_lock);
-                for (int si = 0; si < MAX_SLOTS; si++) {
-                    if (g_slots[si].loaded && g_slots[si].active)
-                        all_present |= (0x1u << (si * 2));
-                }
-                spin_unlock(s_slot_lock, save2);
-
-                uint32_t arrival_bits = all_present | (0x2u << (slot * 2));
-                uint32_t present_bits = all_present;
-
-                uint8_t pkt[REPORT_LEN];
-                memset(pkt, 0, REPORT_LEN);
-                pkt[0] = 'S';
-                pkt[1] = (arrival_bits >> 0) & 0xFF;
-                pkt[2] = (arrival_bits >> 8) & 0xFF;
-                pkt[3] = (arrival_bits >> 16) & 0xFF;
-                pkt[4] = (arrival_bits >> 24) & 0xFF;
-                pkt[5] = 0;
-                pkt[6] = 0x01;
-                q_push(pkt);
-
-                for (int i = 0; i < 3; i++) {
-                    memset(pkt, 0, REPORT_LEN);
-                    pkt[0] = 'S';
-                    pkt[1] = (present_bits >> 0) & 0xFF;
-                    pkt[2] = (present_bits >> 8) & 0xFF;
-                    pkt[3] = (present_bits >> 16) & 0xFF;
-                    pkt[4] = (present_bits >> 24) & 0xFF;
-                    pkt[5] = 0;
-                    pkt[6] = 0x01;
-                    q_push(pkt);
-                }
             } else {
                 pico_debug("LOAD:BAD_LEN");
             }
@@ -484,11 +413,6 @@ static void core1_uart_rx(void) {
             }
             uart_send(MSG_PICO_READY, NULL, 0);
             pico_debug("ESP_READY:ack");
-            break;
-            if (len >= 1 && payload[0] != g_portal_type && payload[0] <= 3) {
-                g_pending_type = payload[0];
-                g_type_pending = true;
-            }
             break;
 
         default:
