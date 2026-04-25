@@ -128,6 +128,9 @@ static bool     g_was_loaded[MAX_SLOTS]       = {false};
 static bool     g_arrival_pending[MAX_SLOTS]  = {false};
 static bool     g_removal_pending[MAX_SLOTS]  = {false};
 static bool     g_portal_active               = false;
+/* Track whether game has acknowledged a figure via Q command.
+ * Arrival bits keep firing until the game queries with Q. */
+static bool     g_arrival_acked[MAX_SLOTS]    = {false};
 
 static void build_status(uint8_t out[REPORT_LEN]) {
     memset(out, 0, REPORT_LEN);
@@ -145,8 +148,8 @@ static void build_status(uint8_t out[REPORT_LEN]) {
         g_was_loaded[i] = loaded;
 
         uint32_t slot_bits = 0;
-        if (g_arrival_pending[i]) {
-            slot_bits = 0x3;            /* 11 = arrived */
+        if (g_arrival_pending[i] || (loaded && !g_arrival_acked[i])) {
+            slot_bits = 0x3;            /* 11 = arrived — keep until Q acks */
             g_arrival_pending[i] = false;
         } else if (g_removal_pending[i]) {
             slot_bits = 0x2;            /* 10 = removed */
@@ -201,26 +204,40 @@ static void handle_command(const uint8_t *cmd) {
     switch (cmd[0]) {
 
     case 'R':
-        /* Ready — identifies portal type to game.
-         * Traptanium portal (Trap Team) is universal — works with ALL games.
-         * Hardcoded to Traptanium ID: 0x02 0x18
-         */
+        /* Ready — Traptanium ID, universal across all games */
         g_portal_active = true;
         resp[0] = 'R';
         resp[1] = 0x02;
         resp[2] = 0x18;
+        {
+            char d[16] = "R:";
+            d[2] = "0123456789ABCDEF"[cmd[1]>>4];
+            d[3] = "0123456789ABCDEF"[cmd[1]&0xF];
+            d[4] = ',';
+            d[5] = "0123456789ABCDEF"[cmd[2]>>4];
+            d[6] = "0123456789ABCDEF"[cmd[2]&0xF];
+            d[7] = '\0';
+            pico_debug(d);
+        }
         break;
 
     case 'A':
-        /* Activate/deactivate portal.
-         * Wired portal:   {A, activation, 0xFF, 0x77}
-         * Wireless portal: {A, activation, 0xFF, 0x00}  ← PS3 uses wireless
-         * We use wireless format since we emulate the wireless dongle for PS3. */
+        /* Activate/deactivate portal. */
         g_portal_active = (cmd[1] == 0x01);
-        resp[0] = 0x41;   /* 'A' */
-        resp[1] = cmd[1]; /* echo activation byte */
-        resp[2] = 0xFF;   /* battery/status byte */
-        resp[3] = 0x00;   /* 0x00 for wireless, 0x77 for wired */
+        resp[0] = 0x41;
+        resp[1] = cmd[1];
+        resp[2] = 0xFF;
+        resp[3] = 0x00;
+        {
+            char d[16] = "A:";
+            d[2] = "0123456789ABCDEF"[cmd[1]>>4];
+            d[3] = "0123456789ABCDEF"[cmd[1]&0xF];
+            d[4] = ',';
+            d[5] = "0123456789ABCDEF"[cmd[2]>>4];
+            d[6] = "0123456789ABCDEF"[cmd[2]&0xF];
+            d[7] = '\0';
+            pico_debug(d);
+        }
         break;
 
     case 'S':
@@ -240,6 +257,8 @@ static void handle_command(const uint8_t *cmd) {
                 d[5] = "0123456789ABCDEF"[raw_idx&0xF];
                 d[6] = '>'; d[7] = 's'; d[8] = '0'+slot; d[9] = '\0';
                 pico_debug(d);
+                /* Game queried the figure — mark arrival acknowledged */
+                g_arrival_acked[slot] = true;
             }
             resp[0] = 'Q';
             resp[2] = blk;
@@ -445,9 +464,11 @@ static void core1_uart_rx(void) {
 
         case MSG_UNLOAD:
             if (len >= 1) {
+                uint8_t slot = payload[0];
                 uint32_t save = spin_lock_blocking(s_slot_lock);
-                slots_unload(payload[0]);
+                slots_unload(slot);
                 spin_unlock(s_slot_lock, save);
+                if (slot < MAX_SLOTS) g_arrival_acked[slot] = false;
             }
             break;
 
@@ -455,7 +476,10 @@ static void core1_uart_rx(void) {
             /* ESP32 just booted — unload all slots and re-announce ourselves */
             {
                 uint32_t save = spin_lock_blocking(s_slot_lock);
-                for (int si = 0; si < MAX_SLOTS; si++) slots_unload(si);
+                for (int si = 0; si < MAX_SLOTS; si++) {
+                    slots_unload(si);
+                    g_arrival_acked[si] = false;
+                }
                 spin_unlock(s_slot_lock, save);
             }
             uart_send(MSG_PICO_READY, NULL, 0);
