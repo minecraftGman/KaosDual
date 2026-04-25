@@ -167,7 +167,7 @@ static void build_status(uint8_t out[REPORT_LEN]) {
     out[3] = (bits >> 16) & 0xFF;
     out[4] = (bits >> 24) & 0xFF;
     out[5] = g_status_seq++;
-    out[6] = g_portal_active ? 0x01 : 0x00;
+    out[6] = 0x01;  /* always active — real portal never reports inactive */
 }
 
 /* -----------------------------------------------------------------------
