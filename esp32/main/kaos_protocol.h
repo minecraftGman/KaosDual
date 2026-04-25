@@ -9,20 +9,21 @@
  *   ESP32 GPIO16 (RX2) ←── Pico GPIO4  (TX1, UART1)
  *   ESP32 GND          ─── Pico GND
  *
- * Baud rate: 921600
+ * Baud rate: 115200
  *
  * Frame format:
  *   [0xAB][LEN:1][TYPE:1][PAYLOAD: LEN bytes][XOR:1]
- *
  *   XOR = LEN ^ TYPE ^ all payload bytes
  *
  * ── ESP32 → Pico ──────────────────────────────────────────
- *   MSG_LOAD    slot(1) + raw_dump(1024)   Load a Skylander into a slot
- *   MSG_UNLOAD  slot(1)                    Unload a slot
+ *   MSG_LOAD       slot(1) + raw_dump(1024)   Load a Skylander into a slot
+ *   MSG_UNLOAD     slot(1)                    Unload a slot
+ *   MSG_ESP_READY  (no payload)               ESP32 booted; Pico clears state
  *
  * ── Pico → ESP32 ──────────────────────────────────────────
- *   MSG_WRITE_BACK  slot(1) + raw_dump(1024)  Game wrote to tag; save to SD
+ *   MSG_WRITE_BACK  slot(1) + raw_dump(1024)  Game wrote to tag; save to SPIFFS
  *   MSG_PICO_READY  (no payload)              Pico booted and is ready
+ *   MSG_DEBUG       string                    Debug log message
  */
 
 #pragma once
@@ -40,8 +41,7 @@
 typedef enum {
     MSG_LOAD        = 0x01,
     MSG_UNLOAD      = 0x02,
-    MSG_SET_PORTAL_TYPE = 0x03,
-    MSG_ESP_READY   = 0x04,   /* ESP32 → Pico: ESP32 just booted, please re-send PICO_READY */
+    MSG_ESP_READY   = 0x04,
     MSG_WRITE_BACK  = 0x10,
     MSG_PICO_READY  = 0x11,
     MSG_DEBUG       = 0x20,

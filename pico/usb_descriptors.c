@@ -2,24 +2,14 @@
  * usb_descriptors.c  —  Pi Pico / TinyUSB
  * Skylander Portal of Power  VID=0x1430  PID=0x0150
  *
- * Portal type is read from portal_get_type() in main.c:
- *   0 = Spyro's Adventure / Giants    — bcdDevice 0x0001
- *   1 = Swap Force                    — bcdDevice 0x0001
- *   2 = Trap Team (Traptanium)        — bcdDevice 0x0200
- *   3 = Imaginators / SuperChargers   — bcdDevice 0x0200 (default)
- *
- * All types share VID/PID 0x1430/0x0150. The game differentiates by
- * the bcdDevice version and product string. Trap Team also checks that
- * the portal responds to the 'J' (fade light) command correctly.
+ * Hardcoded as Traptanium portal — works with all Skylanders games.
+ * bcdDevice=0x0200, product="Traptanium Portal"
  */
 #include "usb_descriptors.h"
 #include "tusb.h"
 #include <string.h>
 
-/* Declared in main.c */
-extern uint8_t portal_get_type(void);
-
-/* ---- Device descriptor — bcdDevice varies by portal type ---- */
+/* ---- Device descriptor ---- */
 uint8_t const *tud_descriptor_device_cb(void) {
     static tusb_desc_device_t desc;
     desc.bLength            = sizeof(tusb_desc_device_t);
@@ -31,9 +21,7 @@ uint8_t const *tud_descriptor_device_cb(void) {
     desc.bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE;
     desc.idVendor           = PORTAL_USB_VID;
     desc.idProduct          = PORTAL_USB_PID;
-    /* Trap Team checks for bcdDevice >= 0x0200 to allow the Traptanium portal.
-     * SSA/Giants/SwapForce used 0x0001. */
-    desc.bcdDevice          = (portal_get_type() >= 2) ? 0x0200 : 0x0001;
+    desc.bcdDevice          = 0x0200;  /* Traptanium */
     desc.iManufacturer      = 0x01;
     desc.iProduct           = 0x02;
     desc.iSerialNumber      = 0x03;
@@ -41,7 +29,7 @@ uint8_t const *tud_descriptor_device_cb(void) {
     return (uint8_t const*)&desc;
 }
 
-/* ---- HID report descriptor — same for all types ---- */
+/* ---- HID report descriptor ---- */
 static const uint8_t desc_hid_report[] = {
     0x06,0x00,0xFF,
     0x09,0x01,
@@ -65,14 +53,7 @@ static const uint8_t desc_config[] = {
                        PORTAL_EP_POLL_MS),
 };
 
-/* ---- String descriptors — product name varies by type ---- */
-static const char *s_product_names[] = {
-    "Spyro Portals",          /* 0: SSA / Giants */
-    "Spyro Portals",          /* 1: Swap Force */
-    "Traptanium Portal",      /* 2: Trap Team */
-    "Spyro Portals",          /* 3: Imaginators */
-};
-
+/* ---- String descriptors ---- */
 uint8_t const *tud_hid_descriptor_report_cb(uint8_t i)    { (void)i; return desc_hid_report; }
 uint8_t const *tud_descriptor_configuration_cb(uint8_t i) { (void)i; return desc_config; }
 
@@ -84,7 +65,7 @@ uint16_t const *tud_descriptor_string_cb(uint8_t idx, uint16_t langid) {
     const char *strs[] = {
         (const char[]){0x09,0x04},
         "Activision",
-        s_product_names[portal_get_type() & 0x03],
+        "Traptanium Portal",
         "00000001",
     };
 

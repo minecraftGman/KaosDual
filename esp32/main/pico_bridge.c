@@ -7,21 +7,15 @@
  */
 #include "pico_bridge.h"
 #include "Skylander.h"
-#include "SkylanderCrypt.h"
 #include "esp_log.h"
 #include "driver/uart.h"
-#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
-#include "nvs_flash.h"
-#include "nvs.h"
 #include <string.h>
 #include <stdio.h>
 
 static const char *TAG = "PicoBridge";
-#define NVS_NAMESPACE   "kaos"
-#define NVS_KEY_PTYPE   "portal_type"
 
 #define BRIDGE_UART     UART_NUM_2
 #define PIN_TX          17
@@ -41,7 +35,7 @@ static void send_frame(kaos_msg_t type, const uint8_t *payload, uint16_t len) {
 }
 
 /* -----------------------------------------------------------------------
- * RX task — listens for MSG_WRITE_BACK and MSG_PICO_READY
+ * RX task — listens for MSG_WRITE_BACK, MSG_PICO_READY, MSG_DEBUG
  * ----------------------------------------------------------------------- */
 static void rx_task(void *arg) {
     kaos_parser_t parser;
@@ -60,34 +54,16 @@ static void rx_task(void *arg) {
 
         switch (type) {
             case MSG_PICO_READY:
-                ESP_LOGI(TAG, "Pico ready — syncing portal type");
+                ESP_LOGI(TAG, "Pico ready");
                 s_pico_ready = true;
-                /* Only send portal type sync — do NOT unload slots.
-                 * If Pico rebooted mid-game, slots will be cleared on the Pico
-                 * side already. Re-loading happens via the web UI, not auto. */
-                {
-                    nvs_handle_t nvs;
-                    uint8_t saved_type = 3;
-                    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
-                        uint8_t v = 3;
-                        if (nvs_get_u8(nvs, NVS_KEY_PTYPE, &v) == ESP_OK) saved_type = v;
-                        nvs_close(nvs);
-                    }
-                    vTaskDelay(pdMS_TO_TICKS(300));
-                    pico_bridge_set_portal_type(saved_type);
-                }
                 break;
 
             case MSG_WRITE_BACK: {
-                /* Pico sends back the updated dump after game writes.
-                 * Data is already encrypted (game writes encrypted, Pico stores
-                 * encrypted) — save directly to SPIFFS, no re-encryption needed. */
                 if (len < 1 + SKYLANDER_DUMP_SIZE) break;
                 uint8_t slot = payload[0];
 
                 xSemaphoreTake(g_sky_mutex, portMAX_DELAY);
                 if (slot < 2 && g_skylanders[slot].loaded) {
-                    /* Save encrypted dump directly */
                     FILE *f = fopen(g_skylanders[slot].filename, "wb");
                     if (f) {
                         fwrite(payload + 1, 1, SKYLANDER_DUMP_SIZE, f);
@@ -128,7 +104,6 @@ void pico_bridge_init(void) {
         .stop_bits  = UART_STOP_BITS_1,
         .flow_ctrl  = UART_HW_FLOWCTRL_DISABLE,
     };
-    /* Large RX buffer — we can receive a full 1025-byte write-back */
     uart_driver_install(BRIDGE_UART, 2048, 2048, 0, NULL, 0);
     uart_param_config(BRIDGE_UART, &cfg);
     uart_set_pin(BRIDGE_UART, PIN_TX, PIN_RX,
@@ -138,15 +113,12 @@ void pico_bridge_init(void) {
     ESP_LOGI(TAG, "Bridge UART2 ready (TX=%d RX=%d @ %d baud)",
              PIN_TX, PIN_RX, KAOS_BAUD);
 
-    /* Tell Pico the ESP32 just booted — Pico will clear its slots and
-     * re-send MSG_PICO_READY so we can re-sync portal type */
     vTaskDelay(pdMS_TO_TICKS(500));
     send_frame(MSG_ESP_READY, NULL, 0);
     ESP_LOGI(TAG, "Sent ESP_READY to Pico");
 }
 
 void pico_bridge_load(uint8_t slot, const uint8_t *raw_dump) {
-    /* payload = [slot(1)][raw_dump(1024)] */
     static uint8_t payload[1 + SKYLANDER_DUMP_SIZE];
     payload[0] = slot;
     memcpy(payload + 1, raw_dump, SKYLANDER_DUMP_SIZE);
@@ -157,19 +129,6 @@ void pico_bridge_load(uint8_t slot, const uint8_t *raw_dump) {
 void pico_bridge_unload(uint8_t slot) {
     send_frame(MSG_UNLOAD, &slot, 1);
     ESP_LOGI(TAG, "Sent UNLOAD slot %d to Pico", slot);
-}
-
-void pico_bridge_set_portal_type(uint8_t type) {
-    send_frame(MSG_SET_PORTAL_TYPE, &type, 1);
-    ESP_LOGI(TAG, "Sent portal type %d to Pico", type);
-
-    /* Persist to NVS so it survives power cycles */
-    nvs_handle_t nvs;
-    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
-        nvs_set_u8(nvs, NVS_KEY_PTYPE, type);
-        nvs_commit(nvs);
-        nvs_close(nvs);
-    }
 }
 
 bool pico_bridge_is_ready(void) {

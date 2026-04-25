@@ -9,9 +9,10 @@
  *   - Status packet: 'S' [b0][b1][b2][b3] [seq] [active] 0x00...
  *     - 4 status bytes = 32-bit array, 2 bits per slot (up to 16 slots)
  *     - bits [2i+1:2i]: 00=absent, 01=present, 11=arrived, 10=removed
- *   - R response identifies portal type to the game
- *   - A response: 0x41, activation_byte, 0xFF, 0x77
- *   - Query/Write use index 0x10 for slot 0, 0x11 for slot 1, etc.
+ *   - R response: {R, 0x02, 0x18} — Traptanium ID, works with all games
+ *   - A response: {A, activation, 0xFF, 0x00} — wireless portal format
+ *   - Status bits 0-1 = slot 0 (index 0x20), bits 2-3 = slot 1 (index 0x21)
+ *   - Query/Write index 0x20 = slot 0, 0x21 = slot 1 (Traptanium mapping)
  *
  * Core 0: TinyUSB + HID + response queue drain
  * Core 1: UART RX from ESP32
@@ -23,8 +24,6 @@
 #include "pico/multicore.h"
 #include "pico/sync.h"
 #include "hardware/uart.h"
-#include "hardware/watchdog.h"
-#include "hardware/structs/watchdog.h"
 #include "tusb.h"
 
 #include "skylander_slots.h"
@@ -38,32 +37,6 @@
 #define KAOS_UART_TX 4
 #define KAOS_UART_RX 5
 
-/* -----------------------------------------------------------------------
- * Portal type — stored in watchdog scratch across reboots
- * scratch[4] = magic, scratch[5] = type
- * ----------------------------------------------------------------------- */
-#define PORTAL_TYPE_MAGIC 0xCA05CA05u
-
-static uint8_t load_portal_type(void) {
-    if (watchdog_hw->scratch[4] == PORTAL_TYPE_MAGIC) {
-        uint8_t t = (uint8_t)watchdog_hw->scratch[5];
-        if (t <= 3) return t;
-    }
-    return 3; /* default: Imaginators */
-}
-
-static void save_and_reboot(uint8_t type) {
-    watchdog_hw->scratch[4] = PORTAL_TYPE_MAGIC;
-    watchdog_hw->scratch[5] = type;
-#ifdef PICO_DEFAULT_LED_PIN
-    gpio_put(PICO_DEFAULT_LED_PIN, 1);
-#endif
-    watchdog_reboot(0, 0, 10);
-    while (1) tight_loop_contents();
-}
-
-volatile uint8_t g_portal_type = 3;
-uint8_t portal_get_type(void) { return g_portal_type; }
 
 /* -----------------------------------------------------------------------
  * Response queue — core 0 drains this into USB IN reports
@@ -127,7 +100,6 @@ static uint8_t  g_status_seq = 0;
 static bool     g_was_loaded[MAX_SLOTS]       = {false};
 static bool     g_arrival_pending[MAX_SLOTS]  = {false};
 static bool     g_removal_pending[MAX_SLOTS]  = {false};
-static bool     g_portal_active               = false;
 
 static void build_status(uint8_t out[REPORT_LEN]) {
     memset(out, 0, REPORT_LEN);
@@ -155,12 +127,10 @@ static void build_status(uint8_t out[REPORT_LEN]) {
             slot_bits = 0x1;            /* 01 = present */
         }
 
-        /* Traptanium portal bit layout:
-         * Bits 0-1:   trap slot (0x10) — unused for now
-         * Bits 16-17: figure slot 0 (P1, index 0x20)
-         * Bits 18-19: figure slot 1 (P2, index 0x21)
-         * i*2 + 16 maps slot 0 → bits 16-17, slot 1 → bits 18-19 */
-        bits |= (slot_bits << (i * 2 + 16));
+        /* Status bit layout — 2 bits per slot starting at bit 0.
+         * The game maps bit position N*2 to query index 0x20+N.
+         * No shift needed — slot 0 at bits 0-1 = index 0x20, slot 1 at bits 2-3 = index 0x21 */
+        bits |= (slot_bits << (i * 2));
     }
     spin_unlock(s_slot_lock, save);
 
@@ -207,7 +177,6 @@ static void handle_command(const uint8_t *cmd) {
 
     case 'R':
         /* Ready — Traptanium ID, universal across all games */
-        g_portal_active = true;
         resp[0] = 'R';
         resp[1] = 0x02;
         resp[2] = 0x18;
@@ -224,8 +193,9 @@ static void handle_command(const uint8_t *cmd) {
         break;
 
     case 'A':
-        /* Activate/deactivate portal. */
-        g_portal_active = (cmd[1] == 0x01);
+        /* Activate/deactivate portal.
+         * Wireless format: {A, activation, 0xFF, 0x00}
+         * cmd[2] may contain LED color/brightness for Trap Team portal lights — ignored. */
         resp[0] = 0x41;
         resp[1] = cmd[1];
         resp[2] = 0xFF;
@@ -365,10 +335,6 @@ static void uart_send(kaos_msg_t type, const uint8_t *payload, uint16_t len) {
 /* -----------------------------------------------------------------------
  * Core 1 — UART RX from ESP32
  * ----------------------------------------------------------------------- */
-static volatile bool     g_type_pending   = false;
-static volatile uint8_t  g_pending_type   = 3;
-
-
 static void core1_uart_rx(void) {
     kaos_parser_t parser;
     kaos_parser_init(&parser);
@@ -419,6 +385,9 @@ static void core1_uart_rx(void) {
                 uint32_t save = spin_lock_blocking(s_slot_lock);
                 for (int si = 0; si < MAX_SLOTS; si++) {
                     slots_unload(si);
+                    g_arrival_pending[si] = false;
+                    g_removal_pending[si] = false;
+                    g_was_loaded[si]      = false;
                 }
                 spin_unlock(s_slot_lock, save);
             }
@@ -447,9 +416,6 @@ int main(void) {
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     gpio_put(PICO_DEFAULT_LED_PIN, 0);
 #endif
-
-    /* Load portal type from watchdog scratch */
-    g_portal_type = load_portal_type();
 
     /* UART1 for ESP32 comms */
     uart_init(KAOS_UART, KAOS_BAUD);
@@ -499,16 +465,6 @@ int main(void) {
                     pico_debug("WB:done");
                 }
             }
-        }
-
-        /* Portal type change — save and reboot */
-        if (g_type_pending) {
-            g_type_pending = false;
-#ifdef PICO_DEFAULT_LED_PIN
-            gpio_put(PICO_DEFAULT_LED_PIN, 1);
-#endif
-            sleep_ms(50);
-            save_and_reboot(g_pending_type);
         }
 
         /* Drain response queue → USB IN */

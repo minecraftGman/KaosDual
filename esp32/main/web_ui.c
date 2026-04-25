@@ -7,7 +7,6 @@
  *   POST /api/load          {slot, file} — load a file into a slot
  *   POST /api/unload        {slot} — unload a slot
  *   POST /api/sense         Re-announce portal to game
- *   POST /api/portaltype    {type} — switch portal USB mode
  *   POST /api/upload        multipart/form-data file upload to SPIFFS
  *   GET  /api/download?slot=N  Download current slot data as .bin
  */
@@ -19,8 +18,6 @@
 #include "pico_bridge.h"
 #include "esp_log.h"
 #include "esp_http_server.h"
-#include "nvs_flash.h"
-#include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -38,26 +35,6 @@ extern char g_file_list[64][64];
 extern void spiffs_full_path(const char *basename, char *out, size_t out_len);
 extern void scan_files(void);
 
-typedef enum {
-    PORTAL_TYPE_SSA         = 0,
-    PORTAL_TYPE_SWAP        = 1,
-    PORTAL_TYPE_TRAP        = 2,
-    PORTAL_TYPE_IMAGINATORS = 3
-} portal_type_t;
-
-static portal_type_t g_portal_type = PORTAL_TYPE_IMAGINATORS;
-
-/* Load saved portal type from NVS — called once at server start */
-void web_ui_load_portal_type(void) {
-    nvs_handle_t nvs;
-    if (nvs_open("kaos", NVS_READONLY, &nvs) == ESP_OK) {
-        uint8_t v = 3;
-        if (nvs_get_u8(nvs, "portal_type", &v) == ESP_OK && v <= 3)
-            g_portal_type = (portal_type_t)v;
-        nvs_close(nvs);
-    }
-    ESP_LOGI("WebUI", "Portal type loaded from NVS: %d", (int)g_portal_type);
-}
 
 /* -----------------------------------------------------------------------
  * HTML page — complete rewrite with clean JS architecture
@@ -461,7 +438,7 @@ static esp_err_t handle_state(httpd_req_t *req) {
         }
     }
 
-    n += snprintf(buf+n, sizeof(buf)-n, "],\"portal_type\":%d}", (int)g_portal_type);
+    n += snprintf(buf+n, sizeof(buf)-n, "]}");
     xSemaphoreGive(g_sky_mutex);
 
     httpd_resp_set_type(req, "application/json");
@@ -580,27 +557,6 @@ static esp_err_t handle_sense(httpd_req_t *req) {
         pico_bridge_unload(1);
     }
     xSemaphoreGive(g_sky_mutex);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"ok\":true}");
-    return ESP_OK;
-}
-
-/* -----------------------------------------------------------------------
- * POST /api/portaltype
- * ----------------------------------------------------------------------- */
-static esp_err_t handle_portaltype(httpd_req_t *req) {
-    char body[64] = {0};
-    int len = req->content_len;
-    if (len > 0 && len < (int)sizeof(body)) httpd_req_recv(req, body, len);
-    char *pt = strstr(body, "\"type\"");
-    if (pt) {
-        int t = atoi(pt + 7);
-        if (t >= 0 && t <= 3) {
-            g_portal_type = (portal_type_t)t;
-            pico_bridge_set_portal_type((uint8_t)t);
-            ESP_LOGI(TAG, "Portal type → %d", t);
-        }
-    }
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true}");
     return ESP_OK;
@@ -831,7 +787,6 @@ httpd_handle_t web_ui_start(void) {
         { .uri="/api/load",       .method=HTTP_POST, .handler=handle_load       },
         { .uri="/api/unload",     .method=HTTP_POST, .handler=handle_unload     },
         { .uri="/api/sense",      .method=HTTP_POST, .handler=handle_sense      },
-        { .uri="/api/portaltype", .method=HTTP_POST, .handler=handle_portaltype },
         { .uri="/api/upload",     .method=HTTP_POST, .handler=handle_upload     },
         { .uri="/api/delete",     .method=HTTP_POST, .handler=handle_delete     },
     };
