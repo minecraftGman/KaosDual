@@ -128,9 +128,6 @@ static bool     g_was_loaded[MAX_SLOTS]       = {false};
 static bool     g_arrival_pending[MAX_SLOTS]  = {false};
 static bool     g_removal_pending[MAX_SLOTS]  = {false};
 static bool     g_portal_active               = false;
-/* Track whether game has acknowledged a figure via Q command.
- * Arrival bits keep firing until the game queries with Q. */
-static bool     g_arrival_acked[MAX_SLOTS]    = {false};
 
 static void build_status(uint8_t out[REPORT_LEN]) {
     memset(out, 0, REPORT_LEN);
@@ -142,17 +139,17 @@ static void build_status(uint8_t out[REPORT_LEN]) {
     for (int i = 0; i < MAX_SLOTS; i++) {
         bool loaded = g_slots[i].loaded && g_slots[i].active;
 
-        /* Detect transitions */
+        /* Detect transitions — set pending on load, keep it until game queries */
         if (loaded && !g_was_loaded[i])  g_arrival_pending[i] = true;
         if (!loaded && g_was_loaded[i])  g_removal_pending[i] = true;
         g_was_loaded[i] = loaded;
 
         uint32_t slot_bits = 0;
-        if (g_arrival_pending[i] || (loaded && !g_arrival_acked[i])) {
-            slot_bits = 0x3;            /* 11 = arrived — keep until Q acks */
-            g_arrival_pending[i] = false;
+        if (g_arrival_pending[i]) {
+            slot_bits = 0x3;            /* 11 = arrived — keep firing until cleared by Q */
+            /* NOTE: do NOT clear here — cleared in Q handler when game queries */
         } else if (g_removal_pending[i]) {
-            slot_bits = 0x2;            /* 10 = removed */
+            slot_bits = 0x2;            /* 10 = removed (one-shot) */
             g_removal_pending[i] = false;
         } else if (loaded) {
             slot_bits = 0x1;            /* 01 = present */
@@ -167,7 +164,7 @@ static void build_status(uint8_t out[REPORT_LEN]) {
     out[3] = (bits >> 16) & 0xFF;
     out[4] = (bits >> 24) & 0xFF;
     out[5] = g_status_seq++;
-    out[6] = 0x01;  /* always active — real portal never reports inactive */
+    out[6] = 0x01;  /* always active */
 }
 
 /* -----------------------------------------------------------------------
@@ -257,8 +254,8 @@ static void handle_command(const uint8_t *cmd) {
                 d[5] = "0123456789ABCDEF"[raw_idx&0xF];
                 d[6] = '>'; d[7] = 's'; d[8] = '0'+slot; d[9] = '\0';
                 pico_debug(d);
-                /* Game queried the figure — mark arrival acknowledged */
-                g_arrival_acked[slot] = true;
+                /* Game queried figure — clear arrival so status drops to 01 (present) */
+                if (slot < MAX_SLOTS) g_arrival_pending[slot] = false;
             }
             resp[0] = 'Q';
             resp[2] = blk;
@@ -375,7 +372,6 @@ static void core1_uart_rx(void) {
 
                 uint32_t save = spin_lock_blocking(s_slot_lock);
                 slots_load(slot, payload + 1);
-                g_arrival_acked[slot] = false;  /* trigger persistent arrival in build_status */
                 spin_unlock(s_slot_lock, save);
 
                 char dbg[16] = "LOAD:s";
@@ -397,7 +393,7 @@ static void core1_uart_rx(void) {
                 uint32_t save = spin_lock_blocking(s_slot_lock);
                 slots_unload(slot);
                 spin_unlock(s_slot_lock, save);
-                if (slot < MAX_SLOTS) g_arrival_acked[slot] = false;
+                if (slot < MAX_SLOTS) g_arrival_pending[slot] = false;
             }
             break;
 
@@ -407,7 +403,6 @@ static void core1_uart_rx(void) {
                 uint32_t save = spin_lock_blocking(s_slot_lock);
                 for (int si = 0; si < MAX_SLOTS; si++) {
                     slots_unload(si);
-                    g_arrival_acked[si] = false;
                 }
                 spin_unlock(s_slot_lock, save);
             }
