@@ -155,7 +155,12 @@ static void build_status(uint8_t out[REPORT_LEN]) {
             slot_bits = 0x1;            /* 01 = present */
         }
 
-        bits |= (slot_bits << (i * 2));
+        /* Traptanium portal bit layout:
+         * Bits 0-1:   trap slot (0x10) — unused for now
+         * Bits 16-17: figure slot 0 (P1, index 0x20)
+         * Bits 18-19: figure slot 1 (P2, index 0x21)
+         * i*2 + 16 maps slot 0 → bits 16-17, slot 1 → bits 18-19 */
+        bits |= (slot_bits << (i * 2 + 16));
     }
     spin_unlock(s_slot_lock, save);
 

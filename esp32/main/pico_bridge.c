@@ -60,17 +60,12 @@ static void rx_task(void *arg) {
 
         switch (type) {
             case MSG_PICO_READY:
-                if (!s_pico_ready) {
-                    s_pico_ready = true;
-                    ESP_LOGI(TAG, "Pico ready — clearing slots and syncing portal type");
-
-                    /* Clear all Pico slots first — ensures clean state on ESP32 reboot */
-                    for (uint8_t sl = 0; sl < 2; sl++) {
-                        vTaskDelay(pdMS_TO_TICKS(50));
-                        pico_bridge_unload(sl);
-                    }
-
-                    /* Then sync saved portal type */
+                ESP_LOGI(TAG, "Pico ready — syncing portal type");
+                s_pico_ready = true;
+                /* Only send portal type sync — do NOT unload slots.
+                 * If Pico rebooted mid-game, slots will be cleared on the Pico
+                 * side already. Re-loading happens via the web UI, not auto. */
+                {
                     nvs_handle_t nvs;
                     uint8_t saved_type = 3;
                     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
@@ -80,8 +75,6 @@ static void rx_task(void *arg) {
                     }
                     vTaskDelay(pdMS_TO_TICKS(300));
                     pico_bridge_set_portal_type(saved_type);
-                } else {
-                    ESP_LOGW(TAG, "Pico sent READY again — ignoring (already synced)");
                 }
                 break;
 
