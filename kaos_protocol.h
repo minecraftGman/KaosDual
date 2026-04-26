@@ -42,6 +42,7 @@ typedef enum {
     MSG_LOAD        = 0x01,
     MSG_UNLOAD      = 0x02,
     MSG_ESP_READY   = 0x04,
+    MSG_SET_SSA     = 0x05,   /* ESP32 → Pico: payload[0] = 1 for SSA, 0 for normal */
     MSG_WRITE_BACK  = 0x10,
     MSG_PICO_READY  = 0x11,
     MSG_DEBUG       = 0x20,

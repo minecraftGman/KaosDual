@@ -142,9 +142,11 @@ static void build_status(uint8_t out[REPORT_LEN]) {
     out[6] = 0x01;  /* always active */
 }
 
-/* -----------------------------------------------------------------------
- * Debug helper — sends a short string back to ESP32 via UART
- * ----------------------------------------------------------------------- */
+/* SSA mode — changes R response to wireless dongle ID (0x90 0x00).
+ * All other games use Traptanium ID (0x02 0x18). */
+static volatile bool g_ssa_mode = false;
+
+void portal_set_ssa_mode(bool ssa) { g_ssa_mode = ssa; }
 static void pico_debug(const char *msg) {
     uint16_t len = (uint16_t)strlen(msg);
     if (len > 40) len = 40;
@@ -176,20 +178,13 @@ static void handle_command(const uint8_t *cmd) {
     switch (cmd[0]) {
 
     case 'R':
-        /* Ready — Traptanium ID, universal across all games */
         resp[0] = 'R';
-        resp[1] = 0x02;
-        resp[2] = 0x18;
-        {
-            char d[16] = "R:";
-            d[2] = "0123456789ABCDEF"[cmd[1]>>4];
-            d[3] = "0123456789ABCDEF"[cmd[1]&0xF];
-            d[4] = ',';
-            d[5] = "0123456789ABCDEF"[cmd[2]>>4];
-            d[6] = "0123456789ABCDEF"[cmd[2]&0xF];
-            d[7] = '\0';
-            pico_debug(d);
+        if (g_ssa_mode) {
+            resp[1] = 0x90; resp[2] = 0x00;  /* SSA wireless dongle */
+        } else {
+            resp[1] = 0x02; resp[2] = 0x18;  /* Traptanium — works with all other games */
         }
+        pico_debug(g_ssa_mode ? "R:SSA" : "R:TRAP");
         break;
 
     case 'A':
@@ -391,6 +386,13 @@ static void core1_uart_rx(void) {
                     /* leave g_was_loaded as-is — build_status will detect removal naturally */
                 }
                 spin_unlock(s_slot_lock, save);
+            }
+            break;
+
+        case MSG_SET_SSA:
+            if (len >= 1) {
+                g_ssa_mode = (payload[0] != 0);
+                pico_debug(g_ssa_mode ? "SSA:on" : "SSA:off");
             }
             break;
 
