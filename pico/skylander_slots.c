@@ -8,21 +8,39 @@ void slots_load(uint8_t slot, const uint8_t *dump) {
     if (slot >= MAX_SLOTS) return;
     slot_t *s = &g_slots[slot];
     memcpy(s->data, dump, SKYLANDER_DUMP_SIZE);
-    memcpy(s->uid, dump, 4);
+    /* Cache the 7 actual UID bytes (skipping BCC0 at byte 3) */
+    s->uid[0] = s->data[0];
+    s->uid[1] = s->data[1];
+    s->uid[2] = s->data[2];
+    /* data[3] is BCC0 — skip */
+    s->uid[3] = s->data[4];
+    s->uid[4] = s->data[5];
+    s->uid[5] = s->data[6];
+    s->uid[6] = s->data[7];
     s->loaded = true;
     s->active = true;
     s->dirty  = false;
 
     /* If another loaded slot has the same UID, patch this slot's UID
-     * in-memory only (never written back to SPIFFS) so the game sees
-     * two distinct figures. Increment byte 3 until unique, then fix
-     * the BCC at byte 4 = XOR of UID bytes 0-3. */
+     * in-memory only (never written back to SPIFFS).
+     *
+     * MIFARE Ultralight 7-byte UID layout in block 0 (16 bytes):
+     *   byte 0: UID0
+     *   byte 1: UID1
+     *   byte 2: UID2
+     *   byte 3: BCC0 = 0x88 ^ UID0 ^ UID1 ^ UID2
+     *   byte 4: UID3
+     *   byte 5: UID4
+     *   byte 6: UID5
+     *   byte 7: UID6  ← patch this
+     *   byte 8: BCC1 = UID3 ^ UID4 ^ UID5 ^ UID6
+     */
     for (int other = 0; other < MAX_SLOTS; other++) {
         if (other == slot || !g_slots[other].loaded) continue;
-        if (memcmp(g_slots[other].uid, s->uid, 4) == 0) {
-            s->data[3]++;
-            s->uid[3] = s->data[3];
-            s->data[4] = s->data[0] ^ s->data[1] ^ s->data[2] ^ s->data[3];
+        if (memcmp(g_slots[other].uid, s->uid, 7) == 0) {
+            s->data[7]++;
+            s->uid[6] = s->data[7];
+            s->data[8] = s->data[4] ^ s->data[5] ^ s->data[6] ^ s->data[7];
         }
     }
 }
