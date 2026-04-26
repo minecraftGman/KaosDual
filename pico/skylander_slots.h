@@ -11,9 +11,10 @@
 typedef struct {
     bool    loaded;
     bool    active;
-    bool    dirty;          /* game has written to this slot since last sync */
+    bool    dirty;
     uint8_t data[SKYLANDER_DUMP_SIZE];
-    uint8_t uid[7];         /* 7-byte MIFARE UID: data[0-2] + data[4-7] */
+    uint8_t uid[4];
+    uint8_t orig_uid[4];    /* original UID from file — may differ from uid if patched */
 } slot_t;
 
 extern slot_t g_slots[MAX_SLOTS];

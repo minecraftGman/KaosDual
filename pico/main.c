@@ -27,6 +27,7 @@
 #include "tusb.h"
 
 #include "skylander_slots.h"
+#include "SkylanderCrypt.h"
 #include "usb_descriptors.h"
 #include "kaos_protocol.h"
 
@@ -467,13 +468,29 @@ int main(void) {
                 spin_unlock(s_slot_lock, save);
 
                 if (dirty && last > 0 && (now - last) >= 500) {
-                    /* Game stopped writing — send write-back now */
+                    /* Game stopped writing — normalize UID back to original
+                     * before sending, so the saved file matches the original key */
                     static uint8_t wb_buf[1 + SKYLANDER_DUMP_SIZE];
                     wb_buf[0] = si;
                     uint32_t s2 = spin_lock_blocking(s_slot_lock);
                     memcpy(wb_buf + 1, g_slots[si].data, SKYLANDER_DUMP_SIZE);
+                    bool uid_patched = (memcmp(g_slots[si].uid, g_slots[si].orig_uid, 4) != 0);
+                    uint8_t patched_uid[4], orig_uid[4];
+                    memcpy(patched_uid, g_slots[si].uid, 4);
+                    memcpy(orig_uid, g_slots[si].orig_uid, 4);
                     g_slots[si].dirty = false;
                     spin_unlock(s_slot_lock, s2);
+
+                    if (uid_patched) {
+                        /* Decrypt with patched UID, re-encrypt with original UID */
+                        decrypt_skylander(wb_buf + 1, patched_uid);
+                        encrypt_skylander(wb_buf + 1, orig_uid);
+                        /* Restore original UID bytes in block 0 */
+                        wb_buf[1] = orig_uid[0];
+                        wb_buf[2] = orig_uid[1];
+                        wb_buf[3] = orig_uid[2];
+                        wb_buf[4] = orig_uid[3];
+                    }
 
                     static uint8_t frame[SKYLANDER_DUMP_SIZE + 8];
                     int n = kaos_build_frame(frame, MSG_WRITE_BACK, wb_buf,

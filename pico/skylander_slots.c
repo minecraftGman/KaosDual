@@ -8,15 +8,8 @@ void slots_load(uint8_t slot, const uint8_t *dump) {
     if (slot >= MAX_SLOTS) return;
     slot_t *s = &g_slots[slot];
     memcpy(s->data, dump, SKYLANDER_DUMP_SIZE);
-    /* Cache the 7 actual UID bytes (skipping BCC0 at byte 3) */
-    s->uid[0] = s->data[0];
-    s->uid[1] = s->data[1];
-    s->uid[2] = s->data[2];
-    /* data[3] is BCC0 — skip */
-    s->uid[3] = s->data[4];
-    s->uid[4] = s->data[5];
-    s->uid[5] = s->data[6];
-    s->uid[6] = s->data[7];
+    memcpy(s->uid, dump, 4);
+    memcpy(s->orig_uid, dump, 4);
     s->loaded = true;
     s->active = true;
     s->dirty  = false;
@@ -24,23 +17,24 @@ void slots_load(uint8_t slot, const uint8_t *dump) {
     /* If another loaded slot has the same UID, patch this slot's UID
      * in-memory only (never written back to SPIFFS).
      *
-     * MIFARE Ultralight 7-byte UID layout in block 0 (16 bytes):
-     *   byte 0: UID0
-     *   byte 1: UID1
-     *   byte 2: UID2
-     *   byte 3: BCC0 = 0x88 ^ UID0 ^ UID1 ^ UID2
-     *   byte 4: UID3
-     *   byte 5: UID4
-     *   byte 6: UID5
-     *   byte 7: UID6  ← patch this
-     *   byte 8: BCC1 = UID3 ^ UID4 ^ UID5 ^ UID6
-     */
+     * Skylanders uses data[0..3] as both the tag UID and the crypto key.
+     * Patching data[3] makes the UID unique, but all blocks were encrypted
+     * with the original UID — so we must decrypt with the old key, then
+     * re-encrypt with the new key. */
     for (int other = 0; other < MAX_SLOTS; other++) {
         if (other == slot || !g_slots[other].loaded) continue;
-        if (memcmp(g_slots[other].uid, s->uid, 7) == 0) {
-            s->data[7]++;
-            s->uid[6] = s->data[7];
-            s->data[8] = s->data[4] ^ s->data[5] ^ s->data[6] ^ s->data[7];
+        if (memcmp(g_slots[other].uid, s->uid, 4) == 0) {
+            uint8_t old_uid[4];
+            memcpy(old_uid, s->uid, 4);
+
+            /* Patch the last UID byte */
+            s->data[3]++;
+            s->uid[3] = s->data[3];
+
+            /* Decrypt with old UID, re-encrypt with new UID */
+            decrypt_skylander(s->data, old_uid);
+            encrypt_skylander(s->data, s->uid);
+            break;
         }
     }
 }
