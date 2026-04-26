@@ -7,14 +7,25 @@ slot_t g_slots[MAX_SLOTS] = {0};
 void slots_load(uint8_t slot, const uint8_t *dump) {
     if (slot >= MAX_SLOTS) return;
     slot_t *s = &g_slots[slot];
-    /* Store raw encrypted dump — the game decrypts itself using key derivation.
-     * A real portal serves raw MIFARE block data, never decrypted. */
     memcpy(s->data, dump, SKYLANDER_DUMP_SIZE);
-    memcpy(s->uid, dump, 4);   /* UID is first 4 bytes of block 0 */
-    /* DO NOT decrypt here — game expects encrypted data */
+    memcpy(s->uid, dump, 4);
     s->loaded = true;
     s->active = true;
     s->dirty  = false;
+
+    /* If another loaded slot has the same UID, the game will reject one of them
+     * with "toy has a problem". Patch this slot's UID (in-memory only, not saved)
+     * by incrementing UID byte 3 until it's unique, then fix the BCC at byte 4. */
+    for (int other = 0; other < MAX_SLOTS; other++) {
+        if (other == slot) continue;
+        if (!g_slots[other].loaded) continue;
+        if (memcmp(g_slots[other].uid, s->uid, 4) == 0) {
+            s->data[3]++;
+            s->uid[3] = s->data[3];
+            /* Recalculate BCC (byte 4) = XOR of UID bytes 0-3 */
+            s->data[4] = s->data[0] ^ s->data[1] ^ s->data[2] ^ s->data[3];
+        }
+    }
 }
 
 void slots_unload(uint8_t slot) {
