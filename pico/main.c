@@ -166,8 +166,8 @@ static void handle_command(const uint8_t *cmd) {
     memset(resp, 0, REPORT_LEN);
     bool has_resp = true;
 
-    /* Debug: log commands received from the game */
-    if (cmd[0]=='R' || cmd[0]=='A' || cmd[0]=='Q' || cmd[0]=='S') {
+    /* Debug: R and W are infrequent and worth logging. Q and A log themselves below. S is 50Hz noise — skip. */
+    if (cmd[0] == 'R' || cmd[0] == 'W') {
         char d[6] = "CMD:X";
         d[4] = cmd[0]; d[5] = '\0';
         pico_debug(d);
@@ -201,14 +201,18 @@ static void handle_command(const uint8_t *cmd) {
         resp[2] = 0xFF;
         resp[3] = 0x00;
         {
-            char d[16] = "A:";
-            d[2] = "0123456789ABCDEF"[cmd[1]>>4];
-            d[3] = "0123456789ABCDEF"[cmd[1]&0xF];
-            d[4] = ',';
-            d[5] = "0123456789ABCDEF"[cmd[2]>>4];
-            d[6] = "0123456789ABCDEF"[cmd[2]&0xF];
-            d[7] = '\0';
-            pico_debug(d);
+            static uint8_t last_a1 = 0xFF, last_a2 = 0xFF;
+            if (cmd[1] != last_a1 || cmd[2] != last_a2) {
+                last_a1 = cmd[1]; last_a2 = cmd[2];
+                char d[16] = "A:";
+                d[2] = "0123456789ABCDEF"[cmd[1]>>4];
+                d[3] = "0123456789ABCDEF"[cmd[1]&0xF];
+                d[4] = ',';
+                d[5] = "0123456789ABCDEF"[cmd[2]>>4];
+                d[6] = "0123456789ABCDEF"[cmd[2]&0xF];
+                d[7] = '\0';
+                pico_debug(d);
+            }
         }
         break;
 
