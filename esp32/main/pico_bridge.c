@@ -64,15 +64,24 @@ static void rx_task(void *arg) {
 
                 xSemaphoreTake(g_sky_mutex, portMAX_DELAY);
                 if (slot < 2 && g_skylanders[slot].loaded) {
-                    FILE *f = fopen(g_skylanders[slot].filename, "wb");
-                    if (f) {
-                        fwrite(payload + 1, 1, SKYLANDER_DUMP_SIZE, f);
-                        fclose(f);
-                        ESP_LOGI(TAG, "Saved slot %d → %s", slot,
-                                 g_skylanders[slot].filename);
+                    /* Verify UID in write-back matches currently loaded file
+                     * to prevent stale write-back from overwriting wrong file */
+                    uint8_t wb_uid[4];
+                    memcpy(wb_uid, payload + 1, 4);
+                    bool uid_match = (memcmp(wb_uid, g_skylanders[slot].uid, 4) == 0);
+                    if (uid_match) {
+                        FILE *f = fopen(g_skylanders[slot].filename, "wb");
+                        if (f) {
+                            fwrite(payload + 1, 1, SKYLANDER_DUMP_SIZE, f);
+                            fclose(f);
+                            ESP_LOGI(TAG, "Saved slot %d → %s", slot,
+                                     g_skylanders[slot].filename);
+                        } else {
+                            ESP_LOGE(TAG, "Cannot open for write: %s",
+                                     g_skylanders[slot].filename);
+                        }
                     } else {
-                        ESP_LOGE(TAG, "Cannot open for write: %s",
-                                 g_skylanders[slot].filename);
+                        ESP_LOGW(TAG, "Slot %d write-back UID mismatch — discarded", slot);
                     }
                 }
                 xSemaphoreGive(g_sky_mutex);
