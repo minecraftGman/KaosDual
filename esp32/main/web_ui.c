@@ -608,6 +608,14 @@ static esp_err_t handle_portaltype(httpd_req_t *req) {
     if (pt) {
         int t = atoi(pt + 7);
         if (t >= 0 && t <= 3) {
+            /* Unload both slots first — Pico will reboot and lose state */
+            xSemaphoreTake(g_sky_mutex, portMAX_DELAY);
+            skylander_unload(0);
+            skylander_unload(1);
+            xSemaphoreGive(g_sky_mutex);
+            pico_bridge_unload(0);
+            pico_bridge_unload(1);
+            vTaskDelay(pdMS_TO_TICKS(100));
             pico_bridge_set_portal_type((uint8_t)t);
             ESP_LOGI(TAG, "Portal type → %d", t);
         }
