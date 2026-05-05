@@ -224,7 +224,7 @@ static void handle_command(const uint8_t *cmd) {
             uint32_t save = spin_lock_blocking(s_slot_lock);
             uint8_t *bd = slots_get_block(slot, blk);
             if (bd && slot < MAX_SLOTS) {
-                resp[1] = raw_idx; /* echo exact index back */
+                resp[1] = raw_idx; /* echo raw index — 0x10+slot for older games, 0x20+slot for Trap Team */
                 memcpy(&resp[3], bd, 16);
             } else {
                 resp[1] = 0x01;
@@ -386,7 +386,7 @@ static void core1_uart_rx(void) {
                 uint8_t pkt[REPORT_LEN];
                 memset(pkt, 0, REPORT_LEN);
                 pkt[0] = 'S';
-                uint32_t arrival_bits = all_present | (0x3u << (slot * 2));
+                uint32_t arrival_bits = all_present | (0x2u << (slot * 2));
                 pkt[1] = (arrival_bits >> 0) & 0xFF;
                 pkt[2] = (arrival_bits >> 8) & 0xFF;
                 pkt[3] = (arrival_bits >> 16) & 0xFF;

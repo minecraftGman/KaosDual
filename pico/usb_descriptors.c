@@ -16,7 +16,7 @@ uint8_t const *tud_descriptor_device_cb(void) {
     static tusb_desc_device_t desc;
     desc.bLength            = sizeof(tusb_desc_device_t);
     desc.bDescriptorType    = TUSB_DESC_DEVICE;
-    desc.bcdUSB             = 0x0200;
+    desc.bcdUSB             = (portal_get_type() == 2) ? 0x0200 : 0x0110;
     desc.bDeviceClass       = 0x00;
     desc.bDeviceSubClass    = 0x00;
     desc.bDeviceProtocol    = 0x00;
