@@ -9,34 +9,9 @@ void slots_load(uint8_t slot, const uint8_t *dump) {
     slot_t *s = &g_slots[slot];
     memcpy(s->data, dump, SKYLANDER_DUMP_SIZE);
     memcpy(s->uid, dump, 4);
-    memcpy(s->orig_uid, dump, 4);
     s->loaded = true;
     s->active = true;
     s->dirty  = false;
-
-    /* If another loaded slot has the same UID, patch this slot's UID
-     * in-memory only (never written back to SPIFFS).
-     *
-     * Skylanders uses data[0..3] as both the tag UID and the crypto key.
-     * Patching data[3] makes the UID unique, but all blocks were encrypted
-     * with the original UID — so we must decrypt with the old key, then
-     * re-encrypt with the new key. */
-    for (int other = 0; other < MAX_SLOTS; other++) {
-        if (other == slot || !g_slots[other].loaded) continue;
-        if (memcmp(g_slots[other].uid, s->uid, 4) == 0) {
-            uint8_t old_uid[4];
-            memcpy(old_uid, s->uid, 4);
-
-            /* Patch the last UID byte */
-            s->data[3]++;
-            s->uid[3] = s->data[3];
-
-            /* Decrypt with old UID, re-encrypt with new UID */
-            decrypt_skylander(s->data, old_uid);
-            encrypt_skylander(s->data, s->uid);
-            break;
-        }
-    }
 }
 
 void slots_unload(uint8_t slot) {

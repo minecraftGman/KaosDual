@@ -131,6 +131,7 @@ void pico_bridge_unload(uint8_t slot) {
     ESP_LOGI(TAG, "Sent UNLOAD slot %d to Pico", slot);
 }
 
-bool pico_bridge_is_ready(void) {
-    return s_pico_ready;
+void pico_bridge_set_portal_type(uint8_t type) {
+    send_frame(MSG_SET_PORTAL_TYPE, &type, 1);
+    ESP_LOGI(TAG, "Portal type → %d", type);
 }

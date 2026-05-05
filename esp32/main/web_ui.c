@@ -92,9 +92,9 @@ static const char HTML_PAGE[] =
   "transition:border-color .3s}"
 ".card.loaded{border-color:var(--accent);"
   "box-shadow:0 0 20px rgba(109,40,217,.15)}"
-".card-hdr{display:flex;justify-content:space-between;align-items:center}"
-".lbl{font-size:.7rem;color:var(--muted);font-weight:600;letter-spacing:.1em;text-transform:uppercase}"
-".pnum{font-family:'Orbitron',monospace;font-size:.8rem;color:var(--accent2)}"
+".card-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}"
+".lbl{font-size:.75rem;color:var(--muted);font-weight:600;letter-spacing:.1em;text-transform:uppercase}"
+".pnum{font-family:'Orbitron',monospace;font-size:1.1rem;font-weight:700;color:var(--accent2);background:rgba(99,102,241,.15);padding:2px 8px;border-radius:6px}"
 
 /* Character display */
 ".char-info{text-align:center;padding:8px 0}"
@@ -164,13 +164,16 @@ static const char HTML_PAGE[] =
   "<p class='sub'>Skylander Portal Manager</p>"
 "</header>"
 
-/* Portal type bar removed — Traptanium is hardcoded (works with all games) */
+/* Portal mode toggle */
+"<div style='text-align:center;margin-bottom:12px'>"
+  "<button id='btnMode' class='btn' onclick='toggleMode()' style='width:200px'>Mode: Traptanium</button>"
+"</div>"
 
 /* Slot cards — static structure, JS only updates inner content divs */
 "<div class='slots'>"
   "<div class='card' id='card0'>"
     "<div class='card-hdr'>"
-      "<span class='lbl'>Player 1</span><span class='pnum'>P1</span>"
+      "<span class='lbl'>Player 1 &nbsp;·&nbsp; Slot 0</span><span class='pnum'>P1</span>"
     "</div>"
     "<div id='info0'></div>"
     "<select class='file-sel' id='sel0'></select>"
@@ -179,7 +182,7 @@ static const char HTML_PAGE[] =
   "</div>"
   "<div class='card' id='card1'>"
     "<div class='card-hdr'>"
-      "<span class='lbl'>Player 2</span><span class='pnum'>P2</span>"
+      "<span class='lbl'>Player 2 &nbsp;·&nbsp; Slot 1</span><span class='pnum'>P2</span>"
     "</div>"
     "<div id='info1'></div>"
     "<select class='file-sel' id='sel1'></select>"
@@ -225,16 +228,29 @@ static const char HTML_PAGE[] =
  * Never destroys interactive elements — only updates their properties. */
 "let lastFileKey='';"
 
+"function greyOutDuplicates(){"
+  "if(portalMode!==2)return;" /* Generic mode — allow same character both slots */
+  "for(let i=0;i<2;i++){"
+    "const other=slots[1-i]||{};"
+    "const otherFile=other.loaded?other.filename:null;"
+    "const sel=document.getElementById('sel'+i);"
+    "if(!sel)continue;"
+    "for(const opt of sel.options){"
+      "opt.disabled=(otherFile&&opt.value===otherFile);"
+      "opt.style.color=opt.disabled?'#555':'';"
+    "}"
+  "}"
+"}"
+
 "function renderFiles(){"
   "const key=files.join('|');"
-  "if(key===lastFileKey)return;"  /* files unchanged — leave selects alone */
+  "if(key===lastFileKey)return;"
   "lastFileKey=key;"
   "for(let i=0;i<2;i++){"
     "const sel=document.getElementById('sel'+i);"
     "if(!sel)continue;"
-    "const cur=sel.value;"         /* preserve current selection */
+    "const cur=sel.value;"
     "sel.innerHTML=files.map(f=>'<option>'+f+'</option>').join('');"
-    /* restore selection if file still exists */
     "if(files.includes(cur))sel.value=cur;"
   "}"
 "}"
@@ -282,6 +298,18 @@ static const char HTML_PAGE[] =
 
 /* renderPortalType / setPortalType removed — Traptanium hardcoded */
 
+"var portalMode=2;" /* 0=Generic, 2=Traptanium (default) */
+"function updateModeBtn(){"
+  "document.getElementById('btnMode').textContent='Mode: '+(portalMode===2?'Traptanium':'Generic');"
+"}"
+"async function toggleMode(){"
+  "portalMode=(portalMode===2?0:2);"
+  "updateModeBtn();"
+  "await fetch('/api/portaltype',{method:'POST',"
+    "headers:{'Content-Type':'application/json'},"
+    "body:JSON.stringify({type:portalMode})});"
+"}"
+
 /* ── Fetch ─────────────────────────────────────────────── */
 "async function poll(){"
   "try{"
@@ -290,9 +318,12 @@ static const char HTML_PAGE[] =
     "const d=await r.json();"
     "files=d.files||[];"
     "slots=d.slots||[{},{}];"
+    "if(typeof d.ssa!=='undefined'){portalMode=d.ssa?0:2;updateModeBtn();}"
     "renderFiles();"
     "renderSlot(0);"
     "renderSlot(1);"
+    "greyOutDuplicates();"
+    "updateModeBtn();"
     "st('Connected',1);"
   "}catch(e){st('No connection',0)}"
 "}"
@@ -302,6 +333,10 @@ static const char HTML_PAGE[] =
   "const sel=document.getElementById('sel'+i);"
   "const file=sel?sel.value:'';"
   "if(!file){st('No file selected',0);return;}"
+  "if(portalMode===2){"
+    "const other=slots[1-i]||{};"
+    "if(other.loaded&&other.filename===file){st('Already loaded in other slot',0);return;}"
+  "}"
   "st('Loading...',1);"
   "try{"
     "const r=await fetch('/api/load',{method:'POST',"
@@ -563,6 +598,26 @@ static esp_err_t handle_sense(httpd_req_t *req) {
 }
 
 /* -----------------------------------------------------------------------
+ * POST /api/portaltype
+ * ----------------------------------------------------------------------- */
+static esp_err_t handle_portaltype(httpd_req_t *req) {
+    char body[64] = {0};
+    int len = req->content_len;
+    if (len > 0 && len < (int)sizeof(body)) httpd_req_recv(req, body, len);
+    char *pt = strstr(body, "\"type\"");
+    if (pt) {
+        int t = atoi(pt + 7);
+        if (t >= 0 && t <= 3) {
+            pico_bridge_set_portal_type((uint8_t)t);
+            ESP_LOGI(TAG, "Portal type → %d", t);
+        }
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+/* -----------------------------------------------------------------------
  * POST /api/upload  — multipart form upload → SPIFFS
  * ----------------------------------------------------------------------- */
 static esp_err_t handle_upload(httpd_req_t *req) {
@@ -787,6 +842,7 @@ httpd_handle_t web_ui_start(void) {
         { .uri="/api/load",       .method=HTTP_POST, .handler=handle_load       },
         { .uri="/api/unload",     .method=HTTP_POST, .handler=handle_unload     },
         { .uri="/api/sense",      .method=HTTP_POST, .handler=handle_sense      },
+        { .uri="/api/portaltype", .method=HTTP_POST, .handler=handle_portaltype },
         { .uri="/api/upload",     .method=HTTP_POST, .handler=handle_upload     },
         { .uri="/api/delete",     .method=HTTP_POST, .handler=handle_delete     },
     };

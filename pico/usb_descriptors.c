@@ -9,6 +9,8 @@
 #include "tusb.h"
 #include <string.h>
 
+extern uint8_t portal_get_type(void);
+
 /* ---- Device descriptor ---- */
 uint8_t const *tud_descriptor_device_cb(void) {
     static tusb_desc_device_t desc;
@@ -21,7 +23,7 @@ uint8_t const *tud_descriptor_device_cb(void) {
     desc.bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE;
     desc.idVendor           = PORTAL_USB_VID;
     desc.idProduct          = PORTAL_USB_PID;
-    desc.bcdDevice          = 0x0200;  /* Traptanium */
+    desc.bcdDevice          = (portal_get_type() == 2) ? 0x0200 : 0x0001;
     desc.iManufacturer      = 0x01;
     desc.iProduct           = 0x02;
     desc.iSerialNumber      = 0x03;
@@ -65,7 +67,7 @@ uint16_t const *tud_descriptor_string_cb(uint8_t idx, uint16_t langid) {
     const char *strs[] = {
         (const char[]){0x09,0x04},
         "Activision",
-        "Traptanium Portal",
+        (portal_get_type() == 2) ? "Traptanium Portal" : "Spyro Portals",
         "00000001",
     };
 

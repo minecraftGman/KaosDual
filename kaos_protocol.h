@@ -39,13 +39,13 @@
 #define SKYLANDER_DUMP_SIZE 1024
 
 typedef enum {
-    MSG_LOAD        = 0x01,
-    MSG_UNLOAD      = 0x02,
-    MSG_ESP_READY   = 0x04,
-    MSG_SET_SSA     = 0x05,   /* ESP32 → Pico: payload[0] = 1 for SSA, 0 for normal */
-    MSG_WRITE_BACK  = 0x10,
-    MSG_PICO_READY  = 0x11,
-    MSG_DEBUG       = 0x20,
+    MSG_LOAD             = 0x01,
+    MSG_UNLOAD           = 0x02,
+    MSG_SET_PORTAL_TYPE  = 0x03,
+    MSG_ESP_READY        = 0x04,
+    MSG_WRITE_BACK       = 0x10,
+    MSG_PICO_READY       = 0x11,
+    MSG_DEBUG            = 0x20,
 } kaos_msg_t;
 
 /* Build a frame into out_buf (must be >= payload_len + 4).

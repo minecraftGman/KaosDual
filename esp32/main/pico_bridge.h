@@ -16,6 +16,8 @@ void pico_bridge_load(uint8_t slot, const uint8_t *raw_dump_1024);
 void pico_bridge_unload(uint8_t slot);
 
 /* Returns true if the Pico has sent MSG_PICO_READY since boot */
+void pico_bridge_set_portal_type(uint8_t type);
+
 bool pico_bridge_is_ready(void);
 
 #endif

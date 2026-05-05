@@ -14,7 +14,6 @@ typedef struct {
     bool    dirty;
     uint8_t data[SKYLANDER_DUMP_SIZE];
     uint8_t uid[4];
-    uint8_t orig_uid[4];    /* original UID from file — may differ from uid if patched */
 } slot_t;
 
 extern slot_t g_slots[MAX_SLOTS];
