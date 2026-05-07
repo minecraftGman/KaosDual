@@ -11,6 +11,8 @@ idf_component_register(
     REQUIRES
         driver
         spiffs
+        fatfs
+        sdmmc
         esp_timer
         log
         vfs

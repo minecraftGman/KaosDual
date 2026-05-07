@@ -32,6 +32,7 @@ static const char *TAG = "WebUI";
 extern SemaphoreHandle_t g_sky_mutex;
 extern int  g_file_count;
 extern char g_file_list[64][64];
+extern const char *g_storage_root;
 extern void spiffs_full_path(const char *basename, char *out, size_t out_len);
 extern void scan_files(void);
 
@@ -167,6 +168,7 @@ static const char HTML_PAGE[] =
 /* Portal mode toggle */
 "<div style='text-align:center;margin-bottom:12px'>"
   "<button id='btnMode' class='btn' onclick='toggleMode()' style='width:200px'>Mode: Traptanium</button>"
+  "&nbsp;<span id='storageInd' style='color:var(--muted);font-size:0.85em'>Storage: ...</span>"
 "</div>"
 
 /* Slot cards — static structure, JS only updates inner content divs */
@@ -282,8 +284,12 @@ static const char HTML_PAGE[] =
       "'</svg>No Skylander</div>';"
   "}"
 
-  /* Load button */
-  "btnLoad.disabled=(files.length===0);"
+  /* Load button — P2 blocked only when both slots empty (arrival order matters) */
+  "const p1loaded=!!(slots[0]&&slots[0].loaded);"
+  "const p2loaded=!!(slots[1]&&slots[1].loaded);"
+  "const blockP2=i===1&&!p1loaded&&!p2loaded;"
+  "btnLoad.disabled=(files.length===0)||blockP2;"
+  "btnLoad.title=blockP2?'Load Player 1 first':'';"
 
   /* Extra buttons (download + unload) — only shown when loaded */
   "if(s.loaded){"
@@ -318,7 +324,11 @@ static const char HTML_PAGE[] =
     "const d=await r.json();"
     "files=d.files||[];"
     "slots=d.slots||[{},{}];"
-    "if(typeof d.ssa!=='undefined'){portalMode=d.ssa?0:2;updateModeBtn();}"
+    "if(typeof d.portal_type!=='undefined'){portalMode=d.portal_type;updateModeBtn();}"
+    "if(typeof d.storage!=='undefined'){"
+      "const el=document.getElementById('storageInd');"
+      "if(el)el.textContent='Storage: '+d.storage;"
+    "}"
     "renderFiles();"
     "renderSlot(0);"
     "renderSlot(1);"
@@ -333,6 +343,7 @@ static const char HTML_PAGE[] =
   "const sel=document.getElementById('sel'+i);"
   "const file=sel?sel.value:'';"
   "if(!file){st('No file selected',0);return;}"
+  "if(i===1&&!(slots[0]&&slots[0].loaded)){st('Load Player 1 first',0);return;}"
   "if(portalMode===2){"
     "const other=slots[1-i]||{};"
     "if(other.loaded&&other.filename===file){st('Already loaded in other slot',0);return;}"
@@ -473,7 +484,9 @@ static esp_err_t handle_state(httpd_req_t *req) {
         }
     }
 
-    n += snprintf(buf+n, sizeof(buf)-n, "]}");
+    n += snprintf(buf+n, sizeof(buf)-n, "],\"portal_type\":%d,\"storage\":\"%s\"}",
+                  pico_bridge_get_portal_type(),
+                  (g_storage_root && g_storage_root[1] == 's') ? "SD" : "SPIFFS");
     xSemaphoreGive(g_sky_mutex);
 
     httpd_resp_set_type(req, "application/json");

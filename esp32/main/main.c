@@ -1,15 +1,19 @@
 /*
  * KAOS ESP32 — main.c
  *
- * Storage: SPIFFS on internal flash (no SD card needed)
- * Files uploaded via web UI browser, stored in /spiffs/
- * Files downloadable after game progress is saved back via Pico write-backs
+ * Storage: SD card via SPI if present, falls back to SPIFFS on internal flash.
+ * Files uploaded via web UI browser.
  *
- * Wiring (much simpler — no SD card):
+ * SD card wiring (SPI):
+ *   ESP32 GPIO23 (MOSI) ──→ SD MOSI
+ *   ESP32 GPIO19 (MISO) ←── SD MISO
+ *   ESP32 GPIO18 (CLK)  ──→ SD CLK
+ *   ESP32 GPIO5  (CS)   ──→ SD CS
+ *
+ * UART wiring:
  *   ESP32 GPIO17 (TX2) ──→ Pico GPIO5 (UART1 RX)
  *   ESP32 GPIO16 (RX2) ←── Pico GPIO4 (UART1 TX)
  *   ESP32 GND          ─── Pico GND
- *   LCD SDA=GPIO21   SCL=GPIO22   I2C addr=0x27
  */
 
 #include <stdio.h>
@@ -24,6 +28,10 @@
 #include "esp_netif.h"
 #include "esp_event.h"
 #include "driver/i2c.h"
+#include "driver/spi_common.h"
+#include "driver/sdspi_host.h"
+#include "esp_vfs_fat.h"
+#include "sdmmc_cmd.h"
 #include "esp_spiffs.h"
 
 #include "Skylander.h"
@@ -36,22 +44,30 @@ static const char *TAG = "KAOS-ESP32";
  * Config — edit these
  * ----------------------------------------------------------------------- */
 #define WIFI_AP_SSID     "KAOS-Portal"
-#define WIFI_AP_PASSWORD "skylands1"   /* shown on LCD — change to whatever you want */
+#define WIFI_AP_PASSWORD "skylands1"
 #define WIFI_AP_CHANNEL  6
 #define PORTAL_IP        "192.168.4.1"
 #define SPIFFS_MOUNT     "/spiffs"
+#define SD_MOUNT         "/sdcard"
+
+/* SD card SPI pins */
+#define PIN_SD_MOSI      23
+#define PIN_SD_MISO      19
+#define PIN_SD_CLK       18
+#define PIN_SD_CS        5
 
 #define I2C_PORT         I2C_NUM_0
 #define PIN_I2C_SDA      21
 #define PIN_I2C_SCL      22
-#define LCD_I2C_ADDR     0x27          /* try 0x3F if blank */
+#define LCD_I2C_ADDR     0x27
 
 /* -----------------------------------------------------------------------
  * Globals (shared with web_ui.c and pico_bridge.c)
  * ----------------------------------------------------------------------- */
 SemaphoreHandle_t g_sky_mutex;
 int               g_file_count = 0;
-char              g_file_list[64][64];   /* basename only, max 63 chars */
+char              g_file_list[64][64];
+const char       *g_storage_root = SPIFFS_MOUNT; /* set at boot, SD takes priority */
 
 /* -----------------------------------------------------------------------
  * LCD1602 via PCF8574 I2C backpack
@@ -95,6 +111,42 @@ static void lcd_line(uint8_t row, const char *s) {
 /* -----------------------------------------------------------------------
  * SPIFFS
  * ----------------------------------------------------------------------- */
+static sdmmc_card_t *s_sd_card = NULL;
+
+static bool sd_init(void) {
+    spi_bus_config_t bus = {
+        .mosi_io_num   = PIN_SD_MOSI,
+        .miso_io_num   = PIN_SD_MISO,
+        .sclk_io_num   = PIN_SD_CLK,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+    };
+    if (spi_bus_initialize(SPI2_HOST, &bus, SDSPI_DEFAULT_DMA) != ESP_OK) {
+        ESP_LOGW(TAG, "SD SPI bus init failed");
+        return false;
+    }
+
+    esp_vfs_fat_sdmmc_mount_config_t mcfg = {
+        .format_if_mount_failed = false,
+        .max_files              = 20,
+        .allocation_unit_size   = 16 * 1024,
+    };
+    sdspi_device_config_t slot = SDSPI_DEVICE_CONFIG_DEFAULT();
+    slot.gpio_cs   = PIN_SD_CS;
+    slot.host_id   = SPI2_HOST;
+
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    esp_err_t ret = esp_vfs_fat_sdspi_mount(SD_MOUNT, &host, &slot, &mcfg, &s_sd_card);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "SD mount failed (%s) — using SPIFFS", esp_err_to_name(ret));
+        spi_bus_free(SPI2_HOST);
+        return false;
+    }
+    ESP_LOGI(TAG, "SD card mounted at %s (%llu MB)",
+             SD_MOUNT, ((uint64_t)s_sd_card->csd.capacity * s_sd_card->csd.sector_size) >> 20);
+    return true;
+}
+
 static void spiffs_init(void) {
     esp_vfs_spiffs_conf_t conf = {
         .base_path              = SPIFFS_MOUNT,
@@ -114,6 +166,19 @@ static void spiffs_init(void) {
              (unsigned)(total/1024), (unsigned)(used/1024));
 }
 
+static void storage_init(void) {
+    if (sd_init()) {
+        g_storage_root = SD_MOUNT;
+        lcd_line(0, "KAOS Portal");
+        lcd_line(1, "SD card OK");
+    } else {
+        spiffs_init();
+        g_storage_root = SPIFFS_MOUNT;
+        lcd_line(0, "KAOS Portal");
+        lcd_line(1, "SPIFFS storage");
+    }
+}
+
 /* -----------------------------------------------------------------------
  * File scan
  * ----------------------------------------------------------------------- */
@@ -128,8 +193,8 @@ static bool is_sky_file(const char *n) {
 
 void scan_files(void) {
     g_file_count = 0;
-    DIR *dp = opendir(SPIFFS_MOUNT);
-    if (!dp) { ESP_LOGE(TAG, "Cannot open SPIFFS"); return; }
+    DIR *dp = opendir(g_storage_root);
+    if (!dp) { ESP_LOGE(TAG, "Cannot open %s", g_storage_root); return; }
     struct dirent *e;
     while ((e = readdir(dp)) && g_file_count < 64) {
         if (is_sky_file(e->d_name)) {
@@ -140,7 +205,6 @@ void scan_files(void) {
     }
     closedir(dp);
 
-    /* Sort alphabetically so JSON comparison is stable across polls */
     for (int a = 0; a < g_file_count - 1; a++)
         for (int b = a + 1; b < g_file_count; b++)
             if (strcmp(g_file_list[a], g_file_list[b]) > 0) {
@@ -152,12 +216,11 @@ void scan_files(void) {
 
     for (int i = 0; i < g_file_count; i++)
         ESP_LOGI(TAG, "  [%d] %s", i, g_file_list[i]);
-    ESP_LOGI(TAG, "%d file(s)", g_file_count);
+    ESP_LOGI(TAG, "%d file(s) on %s", g_file_count, g_storage_root);
 }
 
-/* Build full SPIFFS path from a basename */
 void spiffs_full_path(const char *basename, char *out, size_t out_len) {
-    snprintf(out, out_len, "%s/%s", SPIFFS_MOUNT, basename);
+    snprintf(out, out_len, "%s/%s", g_storage_root, basename);
 }
 
 /* -----------------------------------------------------------------------
@@ -200,7 +263,7 @@ static void wifi_ap_init(void) {
  * app_main
  * ----------------------------------------------------------------------- */
 void app_main(void) {
-    ESP_LOGI(TAG, "=== KAOS Portal (SPIFFS) ===");
+    ESP_LOGI(TAG, "=== KAOS Portal ===");
 
     /* NVS */
     esp_err_t nvs = nvs_flash_init();
@@ -228,8 +291,8 @@ void app_main(void) {
     /* Mutex */
     g_sky_mutex = xSemaphoreCreateMutex();
 
-    /* SPIFFS — mounts internal flash partition */
-    spiffs_init();
+    /* Storage — SD card if present, SPIFFS fallback */
+    storage_init();
     scan_files();
 
     /* Pico bridge (UART2) */

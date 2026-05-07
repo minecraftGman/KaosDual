@@ -12,10 +12,17 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include <string.h>
 #include <stdio.h>
 
 static const char *TAG = "PicoBridge";
+
+#define NVS_NAMESPACE "kaos"
+#define NVS_KEY_PTYPE "portal_type"
+
+static uint8_t s_portal_type = 2; /* default Traptanium */
 
 #define BRIDGE_UART     UART_NUM_2
 #define PIN_TX          17
@@ -122,9 +129,19 @@ void pico_bridge_init(void) {
     ESP_LOGI(TAG, "Bridge UART2 ready (TX=%d RX=%d @ %d baud)",
              PIN_TX, PIN_RX, KAOS_BAUD);
 
+    /* Load saved portal type from NVS */
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
+        uint8_t v = 2;
+        if (nvs_get_u8(nvs, NVS_KEY_PTYPE, &v) == ESP_OK) s_portal_type = v;
+        nvs_close(nvs);
+    }
+
     vTaskDelay(pdMS_TO_TICKS(500));
     send_frame(MSG_ESP_READY, NULL, 0);
-    ESP_LOGI(TAG, "Sent ESP_READY to Pico");
+    /* Sync portal type to Pico after boot */
+    send_frame(MSG_SET_PORTAL_TYPE, &s_portal_type, 1);
+    ESP_LOGI(TAG, "Sent ESP_READY to Pico (portal type %d)", s_portal_type);
 }
 
 void pico_bridge_load(uint8_t slot, const uint8_t *raw_dump) {
@@ -140,7 +157,19 @@ void pico_bridge_unload(uint8_t slot) {
     ESP_LOGI(TAG, "Sent UNLOAD slot %d to Pico", slot);
 }
 
+uint8_t pico_bridge_get_portal_type(void) {
+    return s_portal_type;
+}
+
 void pico_bridge_set_portal_type(uint8_t type) {
+    s_portal_type = type;
     send_frame(MSG_SET_PORTAL_TYPE, &type, 1);
+    /* Persist to NVS */
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_set_u8(nvs, NVS_KEY_PTYPE, type);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
     ESP_LOGI(TAG, "Portal type → %d", type);
 }
