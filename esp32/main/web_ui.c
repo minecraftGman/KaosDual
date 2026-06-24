@@ -277,7 +277,6 @@ static const char HTML_PAGE[] =
     "info.innerHTML="
       "'<div class=\"char-info\">'+"
       "'<div class=\"char-name\">'+dn+'</div>'+"
-      "'<div class=\"char-elem el-'+e+'\">'+(EL[e]||'')+'  '+e+'</div>'+"
       "'</div>';"
   "}else{"
     "info.innerHTML="
