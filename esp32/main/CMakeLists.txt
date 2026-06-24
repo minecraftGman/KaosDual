@@ -20,5 +20,4 @@ idf_component_register(
         esp_netif
         esp_http_server
         nvs_flash
-        mdns
 )
