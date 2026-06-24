@@ -1,3 +1,7 @@
+# FAT long filename support (stops SD card truncating to 8.3 format)
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
+
 # Target: classic ESP32
 CONFIG_IDF_TARGET="esp32"
 
