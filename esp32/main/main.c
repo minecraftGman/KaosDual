@@ -33,6 +33,7 @@
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include "esp_spiffs.h"
+#include "mdns.h"
 
 #include "Skylander.h"
 #include "web_ui.h"
@@ -129,7 +130,7 @@ static bool sd_init(void) {
     esp_vfs_fat_sdmmc_mount_config_t mcfg = {
         .format_if_mount_failed = false,
         .max_files              = 20,
-        .allocation_unit_size   = 16 * 1024,
+        .allocation_unit_size   = 0,
     };
     sdspi_device_config_t slot = SDSPI_DEVICE_CONFIG_DEFAULT();
     slot.gpio_cs   = PIN_SD_CS;
@@ -304,12 +305,18 @@ void app_main(void) {
     /* Web UI */
     web_ui_start();
 
+    /* mDNS — accessible at http://kaos-portal.local */
+    mdns_init();
+    mdns_hostname_set("kaosportal");
+    mdns_instance_name_set("KAOS Portal");
+    mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+
     /* LCD: show AP name + password */
     lcd_line(0, WIFI_AP_SSID);
     lcd_line(1, "pw:" WIFI_AP_PASSWORD);
 
-    ESP_LOGI(TAG, "Ready. WiFi: '%s'  URL: http://%s",
-             WIFI_AP_SSID, PORTAL_IP);
+    ESP_LOGI(TAG, "Ready. WiFi: '%s'  URL: http://kaos-portal.local",
+             WIFI_AP_SSID);
 
     while (1) vTaskDelay(pdMS_TO_TICKS(10000));
 }

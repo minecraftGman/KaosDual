@@ -284,12 +284,15 @@ static const char HTML_PAGE[] =
       "'</svg>No Skylander</div>';"
   "}"
 
-  /* Load button — P2 blocked only when both slots empty (arrival order matters) */
+  /* Load button — enforce reload order when both slots were unloaded */
   "const p1loaded=!!(slots[0]&&slots[0].loaded);"
   "const p2loaded=!!(slots[1]&&slots[1].loaded);"
-  "const blockP2=i===1&&!p1loaded&&!p2loaded;"
-  "btnLoad.disabled=(files.length===0)||blockP2;"
-  "btnLoad.title=blockP2?'Load Player 1 first':'';"
+  "const bothEmpty=!p1loaded&&!p2loaded;"
+  /* firstMustLoad: -1 = no restriction, 0 = slot 0 must load first, 1 = slot 1 must load first */
+  "const fml=typeof firstMustLoad!=='undefined'?firstMustLoad:-1;"
+  "const blockThis=bothEmpty&&fml!==-1&&fml!==i;"
+  "btnLoad.disabled=(files.length===0)||blockThis;"
+  "btnLoad.title=blockThis?'Other player must load first':'';"
 
   /* Extra buttons (download + unload) — only shown when loaded */
   "if(s.loaded){"
@@ -304,7 +307,8 @@ static const char HTML_PAGE[] =
 
 /* renderPortalType / setPortalType removed — Traptanium hardcoded */
 
-"var portalMode=2;" /* 0=Generic, 2=Traptanium (default) */
+"var portalMode=2;"
+"var firstMustLoad=-1;"
 "function updateModeBtn(){"
   "document.getElementById('btnMode').textContent='Mode: '+(portalMode===2?'Traptanium':'Generic');"
 "}"
@@ -325,6 +329,7 @@ static const char HTML_PAGE[] =
     "files=d.files||[];"
     "slots=d.slots||[{},{}];"
     "if(typeof d.portal_type!=='undefined'){portalMode=d.portal_type;updateModeBtn();}"
+    "if(typeof d.first_must_load!=='undefined'){firstMustLoad=d.first_must_load;}"
     "if(typeof d.storage!=='undefined'){"
       "const el=document.getElementById('storageInd');"
       "if(el)el.textContent='Storage: '+d.storage;"
@@ -343,7 +348,11 @@ static const char HTML_PAGE[] =
   "const sel=document.getElementById('sel'+i);"
   "const file=sel?sel.value:'';"
   "if(!file){st('No file selected',0);return;}"
-  "if(i===1&&!(slots[0]&&slots[0].loaded)){st('Load Player 1 first',0);return;}"
+  "const p1l=!!(slots[0]&&slots[0].loaded);"
+  "const p2l=!!(slots[1]&&slots[1].loaded);"
+  "if(!p1l&&!p2l&&firstMustLoad!==-1&&firstMustLoad!==i){"
+    "st('Other player must load first',0);return;"
+  "}"
   "if(portalMode===2){"
     "const other=slots[1-i]||{};"
     "if(other.loaded&&other.filename===file){st('Already loaded in other slot',0);return;}"
@@ -484,9 +493,10 @@ static esp_err_t handle_state(httpd_req_t *req) {
         }
     }
 
-    n += snprintf(buf+n, sizeof(buf)-n, "],\"portal_type\":%d,\"storage\":\"%s\"}",
+    n += snprintf(buf+n, sizeof(buf)-n, "],\"portal_type\":%d,\"storage\":\"%s\",\"first_must_load\":%d}",
                   pico_bridge_get_portal_type(),
-                  (g_storage_root && g_storage_root[1] == 's') ? "SD" : "SPIFFS");
+                  (g_storage_root && strncmp(g_storage_root, "/sdcard", 7) == 0) ? "SD" : "SPIFFS",
+                  g_first_unloaded);
     xSemaphoreGive(g_sky_mutex);
 
     httpd_resp_set_type(req, "application/json");
@@ -541,13 +551,15 @@ static esp_err_t handle_load(httpd_req_t *req) {
      * removal before the new figure arrives — prevents figure index confusion */
     if (g_skylanders[slot].loaded) {
         pico_bridge_unload((uint8_t)slot);
-        vTaskDelay(pdMS_TO_TICKS(200)); /* give game time to process removal */
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
     bool ok = skylander_load((uint8_t)slot, full);
     if (ok && got_raw) {
         ESP_LOGI(TAG, "Pushing slot %d to Pico", slot);
         pico_bridge_load((uint8_t)slot, raw);
     }
+    /* If this was the slot we were waiting on, clear the restriction */
+    if (ok && g_first_unloaded == slot) g_first_unloaded = -1;
     xSemaphoreGive(g_sky_mutex);
 
     httpd_resp_set_type(req, "application/json");
@@ -558,6 +570,8 @@ static esp_err_t handle_load(httpd_req_t *req) {
 /* -----------------------------------------------------------------------
  * POST /api/unload
  * ----------------------------------------------------------------------- */
+static int g_first_unloaded = -1; /* slot that unloaded first when both were loaded */
+
 static esp_err_t handle_unload(httpd_req_t *req) {
     char body[64] = {0};
     int len = req->content_len;
@@ -567,6 +581,15 @@ static esp_err_t handle_unload(httpd_req_t *req) {
     if (ps) slot = atoi(ps + 7);
     if (slot >= 0 && slot <= 1) {
         xSemaphoreTake(g_sky_mutex, portMAX_DELAY);
+
+        /* Track which slot unloads first when both are loaded */
+        bool other_loaded = g_skylanders[1 - slot].loaded;
+        if (other_loaded && g_first_unloaded == -1) {
+            g_first_unloaded = slot;
+        } else if (!other_loaded) {
+            /* Both now unloaded — keep g_first_unloaded as-is */
+        }
+
         skylander_unload((uint8_t)slot);
         xSemaphoreGive(g_sky_mutex);
         pico_bridge_unload((uint8_t)slot);
