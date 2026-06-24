@@ -48,7 +48,7 @@ static const char HTML_PAGE[] =
 "<!DOCTYPE html><html lang='en'><head>"
 "<meta charset='UTF-8'>"
 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-"<title>KAOS Portal</title>"
+"<title>KAOSDual Portal</title>"
 "<style>"
 "@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700&family=Exo+2:wght@400;600&display=swap');"
 ":root{"
@@ -163,7 +163,7 @@ static const char HTML_PAGE[] =
 "</style></head><body>"
 "<div class='wrap'>"
 "<header>"
-  "<h1>◆ KAOS Portal</h1>"
+  "<h1>◆ KAOSDual Portal</h1>"
   "<p class='sub'>Skylander Portal Manager</p>"
 "</header>"
 
@@ -272,11 +272,12 @@ static const char HTML_PAGE[] =
   /* Info panel */
   "if(s.loaded){"
     "const e=s.element||'Magic';"
+    "const fn=s.filename?s.filename.replace(/\\.[^.]+$/,''):'?';"
+    "const dn=s.name&&s.name!=='Unknown'?s.name:fn;"
     "info.innerHTML="
       "'<div class=\"char-info\">'+"
-      "'<div class=\"char-name\">'+(s.name||'Unknown')+'</div>'+"
+      "'<div class=\"char-name\">'+dn+'</div>'+"
       "'<div class=\"char-elem el-'+e+'\">'+(EL[e]||'')+'  '+e+'</div>'+"
-      "'<div class=\"char-file\">'+(s.filename||'')+'</div>'+"
       "'</div>';"
   "}else{"
     "info.innerHTML="
@@ -484,7 +485,16 @@ static esp_err_t handle_state(httpd_req_t *req) {
             const char *base = strrchr(sky->filename, '/');
             base = base ? base+1 : sky->filename;
             char nb[64], fb[80];
-            json_str(nb, sizeof(nb), name ? name : "Unknown");
+            if (name) {
+                json_str(nb, sizeof(nb), name);
+            } else {
+                /* No name in DB — strip extension from filename for display */
+                char stripped[64] = {0};
+                strncpy(stripped, base, sizeof(stripped)-1);
+                char *dot = strrchr(stripped, '.');
+                if (dot) *dot = '\0';
+                json_str(nb, sizeof(nb), stripped);
+            }
             json_str(fb, sizeof(fb), base);
             n += snprintf(buf+n, sizeof(buf)-n,
                 "{\"loaded\":true,\"name\":%s,\"element\":\"%s\","
