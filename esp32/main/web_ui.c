@@ -30,6 +30,8 @@ static const char *TAG = "WebUI";
 #define SPIFFS_MOUNT "/spiffs"
 
 extern SemaphoreHandle_t g_sky_mutex;
+
+static int g_first_unloaded = -1; /* slot that unloaded first when both were loaded */
 extern int  g_file_count;
 extern char g_file_list[64][64];
 extern const char *g_storage_root;
@@ -570,8 +572,6 @@ static esp_err_t handle_load(httpd_req_t *req) {
 /* -----------------------------------------------------------------------
  * POST /api/unload
  * ----------------------------------------------------------------------- */
-static int g_first_unloaded = -1; /* slot that unloaded first when both were loaded */
-
 static esp_err_t handle_unload(httpd_req_t *req) {
     char body[64] = {0};
     int len = req->content_len;
