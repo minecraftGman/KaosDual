@@ -186,7 +186,7 @@ static const char HTML_PAGE[] =
   "</div>"
   "<div class='card' id='card1'>"
     "<div class='card-hdr'>"
-      "<span class='lbl'>Magic Item</span>"
+      "<span class='lbl'>Player 2 &nbsp;·&nbsp; Magic Item</span><span class='pnum'>P2</span>"
     "</div>"
     "<div id='info1'></div>"
     "<select class='file-sel' id='sel1'></select>"
